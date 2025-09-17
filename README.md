@@ -181,20 +181,6 @@ self.fc2 = nn.Linear(hidden_size, hidden_size)
 - [Deep Q-Learning Paper](https://arxiv.org/abs/1312.5602)
 - [PyTorch DQN Tutorial](https://pytorch.org/tutorials/intermediate/reinforcement_q_learning.html)
 
-## 🤝 Contributing
-
-Feel free to experiment with:
-- Different network architectures
-- Alternative RL algorithms (A3C, PPO, etc.)
-- Hyperparameter optimization
-- Multi-environment training
-
-## 📄 License
-
-This project is open source and available under the MIT License.
-
----
-
 **Happy Learning! 🎓🤖**
 
 *This project demonstrates reinforcement learning principles using a challenging grid-world environment. The ObstructedMaze-Full environment tests the agent's ability to navigate complex spaces, manipulate objects, and achieve long-term goals.*
