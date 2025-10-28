@@ -14,6 +14,7 @@ class ObstructedMazeWrapper(gym.Wrapper):
         
         # Track agent progress
         self.agent_positions = deque(maxlen=50)  # Last 50 positions
+        self.action_history = deque(maxlen=50)
         self.objects_interacted = set()
         self.doors_opened = set()
         self.keys_picked = set()
@@ -25,12 +26,14 @@ class ObstructedMazeWrapper(gym.Wrapper):
         self.door_open_reward = 0.2
         self.box_open_reward = 0.1
         self.progress_reward = 0.05
-        self.stuck_penalty = -0.01
+        self.stuck_penalty = -0.02
         
         # Track game state
         self.initial_obs = None
         self.step_count = 0
         self.max_steps = 1000  # Reasonable limit
+        self.turn_in_place_streak = 0
+        self.last_agent_pos = None
         
         print("Enhanced ObstructedMaze Wrapper initialized with reward shaping:")
         print(f"  Exploration reward: {self.exploration_reward}")
@@ -45,6 +48,7 @@ class ObstructedMazeWrapper(gym.Wrapper):
         
         # Reset tracking
         self.agent_positions.clear()
+        self.action_history.clear()
         self.objects_interacted.clear()
         self.doors_opened.clear()
         self.keys_picked.clear()
@@ -56,6 +60,8 @@ class ObstructedMazeWrapper(gym.Wrapper):
         # Get agent position from environment state
         agent_pos = tuple(self.env.agent_pos) if hasattr(self.env, 'agent_pos') else (0, 0)
         self.agent_positions.append(agent_pos)
+        self.last_agent_pos = agent_pos
+        self.turn_in_place_streak = 0
         
         # Enhanced observation with additional info
         enhanced_obs = self._enhance_observation(obs)
@@ -67,6 +73,8 @@ class ObstructedMazeWrapper(gym.Wrapper):
         obs, reward, done, truncated, info = self.env.step(action)
         
         self.step_count += 1
+        # Track action for behavior diagnostics
+        self.action_history.append(action)
         
         # Calculate shaped reward
         shaped_reward = reward  # Original reward (1 for success, 0 otherwise)
@@ -84,11 +92,21 @@ class ObstructedMazeWrapper(gym.Wrapper):
             truncated = True
         
         # Add bonus info
+        # Compute recent spin statistics
+        recent_actions = list(self.action_history)[-20:]
+        turn_count = sum(1 for a in recent_actions if a in (0, 1)) if recent_actions else 0
+        turn_ratio_20 = turn_count / max(1, len(recent_actions))
+        recent_positions = list(self.agent_positions)[-20:]
+        unique_recent_positions = len(set(recent_positions))
+        spin_warning = turn_ratio_20 > 0.7 and unique_recent_positions <= 2
         info.update({
             'bonus_reward': bonus_reward,
             'original_reward': reward,
             'step_count': self.step_count,
-            'exploration_progress': len(set(self.agent_positions)) / max(1, len(self.agent_positions))
+            'exploration_progress': len(set(self.agent_positions)) / max(1, len(self.agent_positions)),
+            'turn_in_place_streak': self.turn_in_place_streak,
+            'turn_ratio_20': turn_ratio_20,
+            'spin_warning': spin_warning
         })
         
         return enhanced_obs, total_reward, done, truncated, info
@@ -114,9 +132,21 @@ class ObstructedMazeWrapper(gym.Wrapper):
         
         agent_pos = tuple(self.env.agent_pos) if hasattr(self.env, 'agent_pos') else (0, 0)
         agent_dir = obs['direction']
+        prev_pos = self.agent_positions[-1] if len(self.agent_positions) > 0 else agent_pos
+        moved = agent_pos != prev_pos
+        is_turn = action in (0, 1)
+        is_forward = action == 2
+        
+        # Track spinning in place
+        if is_turn and not moved:
+            self.turn_in_place_streak += 1
+        else:
+            # reset streak when moving forward or changing position
+            if moved or is_forward:
+                self.turn_in_place_streak = 0
         
         # 1. Exploration bonus for visiting new positions
-        if agent_pos not in set(list(self.agent_positions)[:-1]):  # New position
+        if moved and agent_pos not in set(list(self.agent_positions)[:-1]):  # New position
             bonus += self.exploration_reward
         
         # 2. Check for stuck behavior (oscillating between positions)
@@ -124,6 +154,10 @@ class ObstructedMazeWrapper(gym.Wrapper):
             recent_positions = list(self.agent_positions)[-4:]
             if len(set(recent_positions)) <= 2:  # Oscillating between 2 positions
                 bonus += self.stuck_penalty
+        
+        # 2b. Penalize sustained turning-in-place
+        if self.turn_in_place_streak >= 4:
+            bonus -= 0.02 * min(5, self.turn_in_place_streak - 3)
         
         # 3. Analyze the grid to detect interactions
         grid = obs['image']
@@ -150,11 +184,27 @@ class ObstructedMazeWrapper(gym.Wrapper):
                     bonus += self.box_open_reward
                     self.boxes_opened.add(front_pos)
         
-        # 6. Progress reward for moving towards unexplored areas
-        if len(self.agent_positions) > 1:
-            prev_pos = self.agent_positions[-2]
-            if self._is_moving_towards_exploration(agent_pos, prev_pos):
-                bonus += self.progress_reward * 0.5
+        # 6. Progress reward for moving towards unexplored areas (only if actually moved)
+        if len(self.agent_positions) > 0:
+            prev_pos_for_progress = self.agent_positions[-1]
+            if agent_pos != prev_pos_for_progress and self._is_moving_towards_exploration(agent_pos, prev_pos_for_progress):
+                bonus += self.progress_reward
+        
+        # 6b. Encourage forward movement that changes position
+        if is_forward and moved:
+            # Extra bonus if this is a newly visited cell
+            if agent_pos not in set(self.agent_positions):
+                bonus += 0.03
+            else:
+                bonus += 0.01
+        
+        # 6c. Penalize excessive turning without position change over a short window
+        if len(self.action_history) >= 8:
+            recent_actions = list(self.action_history)[-8:]
+            recent_turn_ratio = sum(1 for a in recent_actions if a in (0, 1)) / 8.0
+            recent_positions = list(self.agent_positions)[-8:] if len(self.agent_positions) >= 8 else list(self.agent_positions)
+            if recent_turn_ratio >= 0.75 and len(set(recent_positions)) <= 2:
+                bonus -= 0.05
         
         # 7. Bonus for successful completion
         if reward > 0:  # Original success reward

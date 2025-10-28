@@ -194,6 +194,7 @@ class DQNAgent:
         # Intrinsic motivation tracking
         self.visited_positions = set()
         self.last_position = None
+        self.turn_streak = 0
         self.step_rewards = []
         
         # Initialize target network
@@ -217,9 +218,26 @@ class DQNAgent:
             intrinsic_reward += 0.1  # Small reward for exploration
         
         # Movement reward (encourage moving vs staying still)
-        if self.last_position is not None:
-            if agent_pos != self.last_position:
-                intrinsic_reward += 0.01
+        moved = (self.last_position is not None) and (agent_pos != self.last_position)
+        if moved:
+            intrinsic_reward += 0.01
+        
+        # Penalize sustained turning-in-place; encourage forward moves that change position
+        is_turn = action in (0, 1)
+        is_forward = action == 2
+        if is_turn and not moved:
+            self.turn_streak += 1
+        else:
+            if moved or is_forward:
+                self.turn_streak = 0
+        
+        if self.turn_streak >= 3:
+            intrinsic_reward -= 0.02 * min(5, self.turn_streak - 2)
+        
+        if is_forward and moved:
+            intrinsic_reward += 0.02
+        elif is_forward and not moved:
+            intrinsic_reward -= 0.01
         
         self.last_position = agent_pos
         
@@ -358,6 +376,7 @@ class DQNAgent:
         """Reset episode-specific tracking."""
         self.episode_count += 1
         self.last_position = None
+        self.turn_streak = 0
         # Reset exploration tracking periodically
         if self.episode_count % 100 == 0:
             self.visited_positions.clear()

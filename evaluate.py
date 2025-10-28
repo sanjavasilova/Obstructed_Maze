@@ -194,6 +194,119 @@ def evaluate_agent(model_path, num_episodes=100, render=False, save_gif=False,
     }
 
 
+def assess_behavior_quality(model_path,
+                            episodes=10,
+                            max_steps=500,
+                            spin_window=20,
+                            spin_ratio_threshold=0.7,
+                            min_unique_positions=3,
+                            use_curriculum=False,
+                            use_reward_shaping=True):
+    """Run short rollouts to detect degenerate behavior like spinning or stalling.
+
+    Returns a dict with diagnostic metrics and a verdict string in 'status'.
+    """
+    render_mode = None
+    env = create_enhanced_env(use_curriculum=use_curriculum,
+                              use_reward_shaping=use_reward_shaping)
+    obs_shape = env.observation_space['image'].shape
+    action_size = env.action_space.n
+    agent = DQNAgent(obs_shape, action_size)
+    if os.path.exists(model_path):
+        agent.load(model_path)
+    else:
+        print(f"Model not found for assessment: {model_path}")
+        return None
+
+    spin_flags = []
+    progress_flags = []
+    ep_turn_ratios = []
+    ep_unique_positions = []
+    ep_steps = []
+    ep_rewards = []
+
+    for _ in range(episodes):
+        obs, info = env.reset()
+        state = preprocess_observation(obs)
+        agent.reset_episode()
+
+        actions = []
+        positions = []
+        total_reward = 0.0
+
+        for t in range(max_steps):
+            action = agent.act(state, training=False)
+            next_obs, reward, done, truncated, info = env.step(action)
+            next_state = preprocess_observation(next_obs)
+            total_reward += reward
+            state = next_state
+
+            actions.append(action)
+            positions.append(tuple(state.get('agent_pos', [0, 0])))
+
+            if done or truncated:
+                break
+
+        # Compute spin ratio over last spin_window steps
+        last_actions = actions[-spin_window:] if len(actions) >= spin_window else actions
+        turn_count = sum(1 for a in last_actions if a in (0, 1))
+        turn_ratio = (turn_count / max(1, len(last_actions))) if last_actions else 0.0
+        unique_pos = len(set(positions))
+
+        # Heuristics
+        spinning = (turn_ratio >= spin_ratio_threshold) and (unique_pos <= 2)
+        made_progress = unique_pos >= min_unique_positions
+
+        spin_flags.append(spinning)
+        progress_flags.append(made_progress)
+        ep_turn_ratios.append(turn_ratio)
+        ep_unique_positions.append(unique_pos)
+        ep_steps.append(len(actions))
+        ep_rewards.append(total_reward)
+
+    env.close()
+
+    # Aggregate metrics
+    spin_rate = np.mean(spin_flags)
+    progress_rate = np.mean(progress_flags)
+    avg_turn_ratio = np.mean(ep_turn_ratios)
+    avg_unique_pos = np.mean(ep_unique_positions)
+    avg_steps = np.mean(ep_steps)
+    avg_reward = np.mean(ep_rewards)
+
+    # Verdict
+    if spin_rate >= 0.5 and progress_rate < 0.5:
+        status = "stuck_spinning"
+    elif progress_rate >= 0.7:
+        status = "improving"
+    else:
+        status = "uncertain"
+
+    result = {
+        'episodes': episodes,
+        'spin_rate': float(spin_rate),
+        'progress_rate': float(progress_rate),
+        'avg_turn_ratio': float(avg_turn_ratio),
+        'avg_unique_positions': float(avg_unique_pos),
+        'avg_steps': float(avg_steps),
+        'avg_reward': float(avg_reward),
+        'status': status
+    }
+
+    print("\n==== Behavior Quality Assessment ====")
+    print(f"Episodes: {episodes}")
+    print(f"Spin rate: {result['spin_rate']:.2%}")
+    print(f"Progress rate: {result['progress_rate']:.2%}")
+    print(f"Avg turn ratio (last {spin_window}): {result['avg_turn_ratio']:.2f}")
+    print(f"Avg unique positions: {result['avg_unique_positions']:.1f}")
+    print(f"Avg steps: {result['avg_steps']:.1f}")
+    print(f"Avg reward: {result['avg_reward']:.2f}")
+    print(f"Verdict: {status}")
+    print("===================================\n")
+
+    return result
+
+
 def save_episode_gif(frames, filename):
     """Save episode frames as GIF."""
     print(f"💾 Saving demonstration as {filename}...")
@@ -424,10 +537,21 @@ def main():
                         help='Use curriculum learning wrapper during evaluation')
     parser.add_argument('--use_reward_shaping', action='store_true',
                         help='Use reward shaping wrapper during evaluation')
+    parser.add_argument('--assess', action='store_true',
+                        help='Run behavior quality assessment instead of evaluation')
+    parser.add_argument('--assess_episodes', type=int, default=10,
+                        help='Episodes for behavior assessment (short)')
     
     args = parser.parse_args()
     
-    if args.demo:
+    if args.assess:
+        assess_behavior_quality(
+            args.model_path,
+            episodes=args.assess_episodes,
+            use_curriculum=args.use_curriculum,
+            use_reward_shaping=True
+        )
+    elif args.demo:
         demo_episode(args.model_path, 
                             render=args.render, 
                             save_gif=args.save_gif)
