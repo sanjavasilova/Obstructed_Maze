@@ -1,6 +1,6 @@
 # MiniGrid ObstructedMaze-Full Reinforcement Learning Project
 
-This project implements a Deep Q-Network (DQN) agent to solve the MiniGrid ObstructedMaze-Full environment. In this challenging environment, a blue ball is hidden in one of the 4 corners of a 3x3 maze, with locked doors, obstructed paths, and keys hidden in boxes.
+This project implements a Double Deep Q-Network (DDQN) agent to solve the MiniGrid ObstructedMaze-Full environment. In this challenging environment, a blue ball is hidden in one of the 4 corners of a 3x3 maze, with locked doors, obstructed paths, and keys hidden in boxes.
 
 ## 🎯 Environment Description
 
@@ -73,7 +73,7 @@ Then open http://localhost:6006 to view training metrics in real-time.
 
 ## 🧠 Algorithm Details
 
-### Deep Q-Network Architecture
+### Double Deep Q-Network Architecture
 - **Convolutional layers**: Process 7x7x3 visual observations
 - **Fully connected layers**: Combine visual features with direction information
 - **Input**: Image (7×7×3) + Direction (one-hot encoded)
