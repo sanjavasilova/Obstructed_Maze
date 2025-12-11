@@ -27,7 +27,7 @@ class ObstructedMazeWrapper(gym.Wrapper):
         self.box_open_reward = 0.1
         self.progress_reward = 0.01
         self.stuck_penalty = -0.05
-        self.step_penalty = 0.02
+        self.step_penalty = 0.005
 
         # Track game state
         self.initial_obs = None
@@ -35,6 +35,9 @@ class ObstructedMazeWrapper(gym.Wrapper):
         self.max_steps = 1000  # Reasonable limit
         self.turn_in_place_streak = 0
         self.last_agent_pos = None
+        self.spin_warning_streak = 0
+        self.last_turn_action = None  # Track last turn direction (0 left, 1 right)
+        self.turn_repeat_streak = 0   # How many identical turn actions in a row
         
         print("Enhanced ObstructedMaze Wrapper initialized with reward shaping:")
         print(f"  Exploration reward: {self.exploration_reward}")
@@ -63,6 +66,9 @@ class ObstructedMazeWrapper(gym.Wrapper):
         self.agent_positions.append(agent_pos)
         self.last_agent_pos = agent_pos
         self.turn_in_place_streak = 0
+        self.spin_warning_streak = 0
+        self.last_turn_action = None
+        self.turn_repeat_streak = 0
         
         # Enhanced observation with additional info
         enhanced_obs = self._enhance_observation(obs)
@@ -76,6 +82,17 @@ class ObstructedMazeWrapper(gym.Wrapper):
         self.step_count += 1
         # Track action for behavior diagnostics
         self.action_history.append(action)
+
+        # Track repeated same-direction turns even if the agent is moving
+        if action in (0, 1):  # turn left or right
+            if self.last_turn_action == action:
+                self.turn_repeat_streak += 1
+            else:
+                self.turn_repeat_streak = 1
+            self.last_turn_action = action
+        else:
+            self.turn_repeat_streak = 0
+            self.last_turn_action = None
         
         # Calculate shaped reward
         shaped_reward = reward  # Original reward (1 for success, 0 otherwise)
@@ -93,22 +110,28 @@ class ObstructedMazeWrapper(gym.Wrapper):
             truncated = True
         
         # Add bonus info
-        # Compute recent spin statistics
-        recent_actions = list(self.action_history)[-20:]
-        turn_count = sum(1 for a in recent_actions if a in (0, 1)) if recent_actions else 0
-        turn_ratio_20 = turn_count / max(1, len(recent_actions))
-        recent_positions = list(self.agent_positions)[-20:]
-        unique_recent_positions = len(set(recent_positions))
-        spin_warning = turn_ratio_20 > 0.7 and unique_recent_positions <= 2
+        # Spin warning triggers when the agent repeats the same turn action several times,
+        # even if it is moving through nearby cells (not only when stationary).
+        spin_warning = self.turn_repeat_streak >= 3
         info.update({
             'bonus_reward': bonus_reward,
             'original_reward': reward,
             'step_count': self.step_count,
             'exploration_progress': len(set(self.agent_positions)) / max(1, len(self.agent_positions)),
             'turn_in_place_streak': self.turn_in_place_streak,
-            'turn_ratio_20': turn_ratio_20,
+            'turn_repeat_streak': self.turn_repeat_streak,
             'spin_warning': spin_warning
         })
+
+        # If spinning persists, truncate episode with a penalty to prevent endless loops
+        if spin_warning:
+            self.spin_warning_streak += 1
+        else:
+            self.spin_warning_streak = 0
+        if self.spin_warning_streak >= 3:
+            total_reward -= 1.0
+            truncated = True
+            info['spin_truncated'] = True
         
         return enhanced_obs, total_reward, done, truncated, info
     
@@ -194,11 +217,10 @@ class ObstructedMazeWrapper(gym.Wrapper):
         # 6b. Encourage forward movement that changes position
         if is_forward and moved:
             # Extra bonus if this is a newly visited cell
-            # if agent_pos not in set(self.agent_positions):
-            #     bonus += 0.03
-            # else:
-            #     bonus += 0.01
-            pass
+            if agent_pos not in set(self.agent_positions):
+                bonus += 0.03
+            else:
+                bonus += 0.01
         
         # 6c. Penalize excessive turning without position change over a short window
         if len(self.action_history) >= 8:

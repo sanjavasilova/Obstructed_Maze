@@ -153,7 +153,7 @@ class DQNAgent:
     """Deep Q-Learning Agent with multiple improvements."""
     
     def __init__(self, obs_shape, action_size, lr=1e-4, gamma=0.99, 
-                 epsilon=1.0, epsilon_decay=0.9995, epsilon_min=0.02,
+                 epsilon=1.0, epsilon_decay=0.997, epsilon_min=0.02,
                  memory_size=100000, batch_size=32, target_update=1000,
                  use_prioritized_replay=True, use_noisy_nets=False):
         
@@ -175,6 +175,9 @@ class DQNAgent:
         self.q_network = DQNNetwork(obs_shape, action_size).to(self.device)
         self.target_network = DQNNetwork(obs_shape, action_size).to(self.device)
         self.optimizer = optim.AdamW(self.q_network.parameters(), lr=lr, weight_decay=1e-5)
+        # Explicitly set modes: target stays in eval; q_network toggles via set_mode
+        self.q_network.train(True)
+        self.target_network.eval()
         
         # Learning rate scheduler
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -206,6 +209,12 @@ class DQNAgent:
         print(f"  Prioritized Replay: {use_prioritized_replay}")
         print(f"  Learning rate: {lr}")
         print(f"  Memory size: {memory_size}")
+
+    def set_mode(self, training: bool):
+        """Switch network modes to ensure dropout/BN behave correctly."""
+        self.q_network.train(training)
+        # Target network should always stay in eval/inference mode
+        self.target_network.eval()
         
     def get_intrinsic_reward(self, state, action, next_state, done):
         """Calculate intrinsic rewards for better exploration."""
@@ -233,6 +242,9 @@ class DQNAgent:
 
         if self.turn_streak >= 2:
             intrinsic_reward -= 0.05 * min(10, self.turn_streak - 1)
+        if self.turn_streak >= 6:
+            intrinsic_reward -= 0.5
+            self.turn_streak = 0
 
         if is_forward and moved:
             intrinsic_reward += 0.02
@@ -262,6 +274,8 @@ class DQNAgent:
     
     def act(self, state, training=True):
         """Enhanced action selection with epsilon-greedy and UCB exploration."""
+        # Ensure proper mode for dropout/batchnorm
+        self.set_mode(training)
         # Epsilon-greedy exploration
         if training and np.random.random() <= self.epsilon:
             return random.randrange(self.action_size)
@@ -282,6 +296,8 @@ class DQNAgent:
     
     def replay(self):
         """Enhanced training with prioritized experience replay."""
+        # Ensure training mode for correct BatchNorm/dropout behavior
+        self.set_mode(True)
         if self.use_prioritized_replay:
             if len(self.memory) < self.batch_size:
                 return 0.0
@@ -361,16 +377,17 @@ class DQNAgent:
         
         # Update target network
         self.step_count += 1
-        if self.step_count % self.target_update == 0:
-            self.update_target_network()
+        self.update_target_network()
         
         return weighted_loss.item()
     
     def update_target_network(self):
         """Soft update of target network."""
-        tau = 0.005  # Soft update parameter
+        tau = 0.01  # Soft update parameter
         for target_param, local_param in zip(self.target_network.parameters(), self.q_network.parameters()):
             target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
+        # Keep target network in eval mode to avoid BatchNorm updates during inference
+        self.target_network.eval()
     
     def reset_episode(self):
         """Reset episode-specific tracking."""
@@ -408,3 +425,5 @@ class DQNAgent:
         self.step_count = checkpoint.get('step_count', 0)
         self.episode_count = checkpoint.get('episode_count', 0)
         self.visited_positions = checkpoint.get('visited_positions', set())
+        # Default to eval mode after loading; training loop will switch back as needed
+        self.set_mode(False)

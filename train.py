@@ -68,8 +68,8 @@ def train_agent(episodes=2000, max_steps=1000, save_interval=250,
         lr=3e-4,                    # Slightly higher learning rate
         gamma=0.995,                # High discount for long-term rewards
         epsilon=1.0,                # Start with full exploration
-        epsilon_decay=0.9995,       # Very slow decay
-        epsilon_min=0.05,           # Higher minimum for continued exploration
+        epsilon_decay=0.997,        # Faster decay to reach exploitation
+        epsilon_min=0.02,           # Lower minimum for stronger exploitation
         memory_size=200000,         # Large replay buffer
         batch_size=64,              # Larger batch size
         target_update=500,          # Frequent target updates

@@ -22,7 +22,7 @@ def preprocess_observation(obs):
 
 
 def evaluate_agent(model_path, num_episodes=100, render=False, save_gif=False,
-                          use_curriculum=False, use_reward_shaping=False):
+                          use_curriculum=True, use_reward_shaping=True):
     """Evaluate a DQN agent."""
     
     print("="*60)
@@ -57,6 +57,9 @@ def evaluate_agent(model_path, num_episodes=100, render=False, save_gif=False,
     agent = DQNAgent(obs_shape, action_size)
     if os.path.exists(model_path):
         agent.load(model_path)
+        # Deterministic evaluation: disable exploration noise and set eval mode
+        agent.epsilon = 0.0
+        agent.set_mode(False)
         print(f"✓ Model loaded successfully")
     else:
         print(f"❌ Model file not found: {model_path}")
@@ -214,6 +217,8 @@ def assess_behavior_quality(model_path,
     agent = DQNAgent(obs_shape, action_size)
     if os.path.exists(model_path):
         agent.load(model_path)
+        agent.epsilon = 0.0
+        agent.set_mode(False)
     else:
         print(f"Model not found for assessment: {model_path}")
         return None
@@ -434,6 +439,8 @@ def demo_episode(model_path, render=True, save_gif=True, detailed=True):
     if os.path.exists(model_path):
         agent.load(model_path)
         print(f"✅ Model loaded: {model_path}")
+        agent.epsilon = 0.0
+        agent.set_mode(False)
     else:
         print(f"❌ Model not found: {model_path}")
         return
@@ -533,10 +540,10 @@ def main():
                         help='Save demonstration as GIF')
     parser.add_argument('--render', action='store_true',
                         help='Render the environment')
-    parser.add_argument('--use_curriculum', action='store_true',
-                        help='Use curriculum learning wrapper during evaluation')
-    parser.add_argument('--use_reward_shaping', action='store_true',
-                        help='Use reward shaping wrapper during evaluation')
+    parser.add_argument('--no_curriculum', action='store_true',
+                        help='Disable curriculum learning wrapper during evaluation')
+    parser.add_argument('--no_reward_shaping', action='store_true',
+                        help='Disable reward shaping wrapper during evaluation')
     parser.add_argument('--assess', action='store_true',
                         help='Run behavior quality assessment instead of evaluation')
     parser.add_argument('--assess_episodes', type=int, default=10,
@@ -560,8 +567,8 @@ def main():
                               args.episodes, 
                               render=args.render,
                               save_gif=args.save_gif,
-                              use_curriculum=args.use_curriculum,
-                              use_reward_shaping=args.use_reward_shaping)
+                              use_curriculum=not args.no_curriculum,
+                              use_reward_shaping=not args.no_reward_shaping)
 
 
 if __name__ == "__main__":
