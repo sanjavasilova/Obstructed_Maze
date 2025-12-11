@@ -215,12 +215,12 @@ class DQNAgent:
         agent_pos = tuple(next_state.get('agent_pos', [0, 0]))
         if agent_pos not in self.visited_positions:
             self.visited_positions.add(agent_pos)
-            intrinsic_reward += 0.1  # Small reward for exploration
+            intrinsic_reward += 0.01  # Small reward for exploration
         
         # Movement reward (encourage moving vs staying still)
         moved = (self.last_position is not None) and (agent_pos != self.last_position)
         if moved:
-            intrinsic_reward += 0.01
+            intrinsic_reward += 0.002
         
         # Penalize sustained turning-in-place; encourage forward moves that change position
         is_turn = action in (0, 1)
@@ -230,10 +230,10 @@ class DQNAgent:
         else:
             if moved or is_forward:
                 self.turn_streak = 0
-        
-        if self.turn_streak >= 3:
-            intrinsic_reward -= 0.02 * min(5, self.turn_streak - 2)
-        
+
+        if self.turn_streak >= 2:
+            intrinsic_reward -= 0.05 * min(10, self.turn_streak - 1)
+
         if is_forward and moved:
             intrinsic_reward += 0.02
         elif is_forward and not moved:

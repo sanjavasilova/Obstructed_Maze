@@ -22,7 +22,7 @@ def preprocess_observation(obs):
     }
 
 
-def train_agent(episodes=5000, max_steps=1000, save_interval=250, 
+def train_agent(episodes=2000, max_steps=1000, save_interval=250,
                         model_dir='models', log_dir='logs',
                         use_curriculum=True, use_reward_shaping=True,
                         load_checkpoint=None):
@@ -383,7 +383,7 @@ def plot_enhanced_training_results(scores, losses, episode_lengths, success_rate
 
 def main():
     parser = argparse.ArgumentParser(description='Train Enhanced DQN agent on ObstructedMaze-Full')
-    parser.add_argument('--episodes', type=int, default=5000, 
+    parser.add_argument('--episodes', type=int, default=2000,
                         help='Number of training episodes')
     parser.add_argument('--max_steps', type=int, default=1000, 
                         help='Maximum steps per episode')

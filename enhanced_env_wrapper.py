@@ -21,13 +21,14 @@ class ObstructedMazeWrapper(gym.Wrapper):
         self.boxes_opened = set()
         
         # Reward shaping parameters
-        self.exploration_reward = 0.01
+        self.exploration_reward = 0.002
         self.key_pickup_reward = 0.3
         self.door_open_reward = 0.2
         self.box_open_reward = 0.1
-        self.progress_reward = 0.05
-        self.stuck_penalty = -0.02
-        
+        self.progress_reward = 0.01
+        self.stuck_penalty = -0.05
+        self.step_penalty = 0.02
+
         # Track game state
         self.initial_obs = None
         self.step_count = 0
@@ -82,7 +83,7 @@ class ObstructedMazeWrapper(gym.Wrapper):
         total_reward = shaped_reward + bonus_reward
         
         # Add step penalty to encourage efficiency
-        total_reward -= 0.001
+        total_reward -= self.step_penalty  # Uses variable
         
         # Enhanced observation
         enhanced_obs = self._enhance_observation(obs)
@@ -156,8 +157,8 @@ class ObstructedMazeWrapper(gym.Wrapper):
                 bonus += self.stuck_penalty
         
         # 2b. Penalize sustained turning-in-place
-        if self.turn_in_place_streak >= 4:
-            bonus -= 0.02 * min(5, self.turn_in_place_streak - 3)
+        if self.turn_in_place_streak >= 2:
+            bonus -= 0.05 * min(10, self.turn_in_place_streak - 1)
         
         # 3. Analyze the grid to detect interactions
         grid = obs['image']
@@ -193,10 +194,11 @@ class ObstructedMazeWrapper(gym.Wrapper):
         # 6b. Encourage forward movement that changes position
         if is_forward and moved:
             # Extra bonus if this is a newly visited cell
-            if agent_pos not in set(self.agent_positions):
-                bonus += 0.03
-            else:
-                bonus += 0.01
+            # if agent_pos not in set(self.agent_positions):
+            #     bonus += 0.03
+            # else:
+            #     bonus += 0.01
+            pass
         
         # 6c. Penalize excessive turning without position change over a short window
         if len(self.action_history) >= 8:
@@ -208,7 +210,7 @@ class ObstructedMazeWrapper(gym.Wrapper):
         
         # 7. Bonus for successful completion
         if reward > 0:  # Original success reward
-            bonus += 1.0  # Additional bonus for finding the ball
+            bonus += 50.0  # Additional bonus for finding the ball
             print(f"🎉 SUCCESS! Agent completed the maze in {self.step_count} steps!")
         
         return bonus
@@ -295,17 +297,22 @@ class CurriculumLearningWrapper(gym.Wrapper):
         
         if done or truncated:
             self.episodes_completed += 1
-            self.success_rate.append(1 if reward > 0 else 0)
+            original_reward = info.get('original_reward', reward)
+            self.success_rate.append(1 if original_reward > 0 else 0)
             
             # Increase difficulty if success rate is good
             if len(self.success_rate) >= 50:
                 recent_success_rate = np.mean(list(self.success_rate)[-50:])
-                if recent_success_rate > 0.7 and self.current_difficulty < self.max_difficulty:
+                if recent_success_rate > 0.7 and  self.current_difficulty < self.max_difficulty:
                     self.current_difficulty = min(
                         self.max_difficulty, 
                         self.current_difficulty + self.difficulty_increment
                     )
                     print(f"Curriculum difficulty increased to: {self.current_difficulty:.3f}")
+                    # Decrease difficulty if struggling (<5% success)
+                elif recent_success_rate < 0.05 and self.current_difficulty > 0.3:
+                    self.current_difficulty = max(0.3, self.current_difficulty - self.difficulty_increment * 2)
+                    print(f"Curriculum difficulty decreased to: {self.current_difficulty:.3f}")
         
         info['curriculum_difficulty'] = self.current_difficulty
         info['success_rate'] = np.mean(self.success_rate) if self.success_rate else 0.0

@@ -39,6 +39,9 @@ pip install -r requirements.txt
 # Basic training (2000 episodes)
 python train.py
 
+# Train without curriculum
+python train.py --no_curriculum
+
 # Custom training parameters
 python train.py --episodes 3000 --max_steps 500 --save_interval 200
 ```
