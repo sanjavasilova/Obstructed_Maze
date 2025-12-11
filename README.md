@@ -56,13 +56,19 @@ Training will:
 
 ```bash
 # Evaluate trained model
-python evaluate.py --model_path models/dqn_obstructed_maze_final.pth --episodes 100
+python evaluate.py --model_path models/dqn_final.pth --episodes 100
 
 # Run demonstration with GIF
-python evaluate.py --model_path models/dqn_obstructed_maze_final.pth --demo --save_gif
+python evaluate.py --model_path models/dqn_final.pth --demo --save_gif
 
 # Live demonstration with rendering
-python evaluate.py --model_path models/dqn_obstructed_maze_final.pth --demo --render
+python evaluate.py --model_path models/dqn_final.pth --demo --demo_episodes 5 --render
+
+# Live demonstration with rendering without curriculum
+python evaluate.py --model_path models/dqn_final.pth --no_curriculum --demo --demo_episodes 5 --render
+
+# Live demonstration with rendering without curriculum and top episodes
+python evaluate.py --model_path models/dqn_final.pth --no_curriculum --demo --demo_episodes 2000 --demo_top_k 2 --save_gif
 ```
 
 ### 4. Monitoring Training

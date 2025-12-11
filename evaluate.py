@@ -407,8 +407,11 @@ def plot_enhanced_evaluation_results(scores, episode_lengths, original_rewards,
     print("📈 Evaluation plots saved as: evaluation_results.png")
 
 
-def demo_episode(model_path, render=True, save_gif=True, detailed=True):
-    """Run a detailed demonstration episode with step-by-step analysis."""
+def demo_episode(model_path, render=True, save_gif=True, detailed=True, num_episodes=1, top_k=1):
+    """Run one or more detailed demonstration episodes with step-by-step analysis.
+
+    If save_gif is enabled, the top_k episodes by total reward will be saved.
+    """
     
     print("="*60)
     print("🎮 DQN AGENT DEMONSTRATION")
@@ -445,85 +448,102 @@ def demo_episode(model_path, render=True, save_gif=True, detailed=True):
         print(f"❌ Model not found: {model_path}")
         return
     
-    obs, info = env.reset()
-    state = preprocess_observation(obs)
-    agent.reset_episode()
-    
-    total_reward = 0
-    original_reward = 0
-    bonus_reward = 0
-    steps = 0
-    frames = []
-    
-    print(f"\n🚀 Starting demonstration...")
-    print(f"Mission: {obs.get('mission', 'Find the blue ball')}")
-    print(f"Initial position: {obs.get('agent_pos', 'Unknown')}")
-    print(f"Initial direction: {obs.get('direction', 'Unknown')}")
-    
-    if save_gif:
-        frames.append(env.render())
-    
     action_names = ['Turn Left', 'Turn Right', 'Move Forward', 'Pick Up', 'Drop', 'Toggle/Open', 'Done']
-    
-    while True:
-        # Choose action
-        action = agent.act(state, training=False)
-        action_name = action_names[action] if action < len(action_names) else f"Action_{action}"
+    episodes_data = []  # track episode results for selecting best rewards when saving GIFs
+
+    for ep in range(num_episodes):
+        obs, info = env.reset()
+        state = preprocess_observation(obs)
+        agent.reset_episode()
         
-        if detailed:
-            print(f"\nStep {steps + 1}:")
-            print(f"  Position: {state.get('agent_pos', 'Unknown')}")
-            print(f"  Direction: {state.get('direction', 'Unknown')}")
-            print(f"  Action: {action} ({action_name})")
+        total_reward = 0
+        original_reward = 0
+        bonus_reward = 0
+        steps = 0
+        frames = [] if save_gif else None
         
-        # Take action
-        next_obs, reward, done, truncated, info = env.step(action)
-        next_state = preprocess_observation(next_obs)
+        print(f"\n Starting demonstration (episode {ep + 1}/{num_episodes})...")
+        print(f"Mission: {obs.get('mission', 'Find the blue ball')}")
+        print(f"Initial position: {obs.get('agent_pos', 'Unknown')}")
+        print(f"Initial direction: {obs.get('direction', 'Unknown')}")
         
         if save_gif:
             frames.append(env.render())
         
-        # Track rewards
-        step_original = info.get('original_reward', reward)
-        step_bonus = info.get('bonus_reward', 0)
+        while True:
+            # Choose action
+            action = agent.act(state, training=False)
+            action_name = action_names[action] if action < len(action_names) else f"Action_{action}"
+            
+            if detailed:
+                print(f"\nStep {steps + 1}:")
+                print(f"  Position: {state.get('agent_pos', 'Unknown')}")
+                print(f"  Direction: {state.get('direction', 'Unknown')}")
+                print(f"  Action: {action} ({action_name})")
+            
+            # Take action
+            next_obs, reward, done, truncated, info = env.step(action)
+            next_state = preprocess_observation(next_obs)
+            
+            if save_gif:
+                frames.append(env.render())
+            
+            # Track rewards
+            step_original = info.get('original_reward', reward)
+            step_bonus = info.get('bonus_reward', 0)
+            
+            original_reward += step_original
+            bonus_reward += step_bonus
+            total_reward += reward
+            steps += 1
+            
+            if detailed:
+                print(f"  Reward: {reward:.3f} (Original: {step_original:.3f}, Bonus: {step_bonus:.3f})")
+                print(f"  Total Reward: {total_reward:.3f}")
+                if 'exploration_progress' in info:
+                    print(f"  Exploration: {info['exploration_progress']:.2%}")
+            
+            state = next_state
+            
+            if done or truncated:
+                break
+            
+            # Stop if too many steps (safety)
+            if steps >= 2000:
+                print("  ⚠️  Stopping due to step limit")
+                break
         
-        original_reward += step_original
-        bonus_reward += step_bonus
-        total_reward += reward
-        steps += 1
+        # Final results
+        success = original_reward > 0
+        print(f"\n" + "="*60)
+        print("🏁 DEMONSTRATION COMPLETED")
+        print("="*60)
+        print(f"Result: {'SUCCESS! 🎉' if success else 'FAILED ❌'}")
+        print(f"Steps taken: {steps}")
+        print(f"Original reward: {original_reward:.3f}")
+        print(f"Bonus reward: {bonus_reward:.3f}")
+        print(f"Total reward: {total_reward:.3f}")
+        print(f"Average reward per step: {total_reward/max(1, steps):.4f}")
+        print("="*60)
         
-        if detailed:
-            print(f"  Reward: {reward:.3f} (Original: {step_original:.3f}, Bonus: {step_bonus:.3f})")
-            print(f"  Total Reward: {total_reward:.3f}")
-            if 'exploration_progress' in info:
-                print(f"  Exploration: {info['exploration_progress']:.2%}")
-        
-        state = next_state
-        
-        if done or truncated:
-            break
-        
-        # Stop if too many steps (safety)
-        if steps >= 2000:
-            print("  ⚠️  Stopping due to step limit")
-            break
-    
-    # Final results
-    success = original_reward > 0
-    print(f"\n" + "="*60)
-    print("🏁 DEMONSTRATION COMPLETED")
-    print("="*60)
-    print(f"Result: {'SUCCESS! 🎉' if success else 'FAILED ❌'}")
-    print(f"Steps taken: {steps}")
-    print(f"Original reward: {original_reward:.3f}")
-    print(f"Bonus reward: {bonus_reward:.3f}")
-    print(f"Total reward: {total_reward:.3f}")
-    print(f"Average reward per step: {total_reward/max(1, steps):.4f}")
-    print("="*60)
-    
-    if save_gif and frames:
-        gif_name = f"enhanced_demo_{'success' if success else 'failed'}.gif"
-        save_episode_gif(frames, gif_name)
+        episodes_data.append({
+            'reward': total_reward,
+            'success': success,
+            'frames': frames,
+            'ep_index': ep + 1
+        })
+
+    # Save GIFs for top-k rewarding episodes (only if saving is requested)
+    if save_gif and episodes_data:
+        top_k = max(1, min(top_k, len(episodes_data)))
+        best_eps = sorted(episodes_data, key=lambda x: x['reward'], reverse=True)[:top_k]
+        for idx, ep_data in enumerate(best_eps, start=1):
+            if not ep_data['frames']:
+                continue
+            tag = f"success" if ep_data['success'] else "failed"
+            gif_name = f"enhanced_demo_{tag}_ep{ep_data['ep_index']}_rank{idx}.gif"
+            save_episode_gif(ep_data['frames'], gif_name)
+            print(f"Saved top-{idx} episode (ep {ep_data['ep_index']}) reward={ep_data['reward']:.3f} -> {gif_name}")
     
     env.close()
 
@@ -536,6 +556,10 @@ def main():
                         help='Number of evaluation episodes')
     parser.add_argument('--demo', action='store_true',
                         help='Run a single detailed demonstration')
+    parser.add_argument('--demo_episodes', type=int, default=1,
+                        help='Number of demo episodes (only used with --demo)')
+    parser.add_argument('--demo_top_k', type=int, default=1,
+                        help='Save GIFs for top-k demo episodes by reward (with --save_gif)')
     parser.add_argument('--save_gif', action='store_true',
                         help='Save demonstration as GIF')
     parser.add_argument('--render', action='store_true',
@@ -561,7 +585,9 @@ def main():
     elif args.demo:
         demo_episode(args.model_path, 
                             render=args.render, 
-                            save_gif=args.save_gif)
+                            save_gif=args.save_gif,
+                            num_episodes=args.demo_episodes,
+                            top_k=args.demo_top_k)
     else:
         evaluate_agent(args.model_path, 
                               args.episodes, 
