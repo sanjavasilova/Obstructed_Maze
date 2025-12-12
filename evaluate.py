@@ -474,12 +474,7 @@ def demo_episode(model_path, render=True, save_gif=True, detailed=True, num_epis
             # Choose action
             action = agent.act(state, training=False)
             action_name = action_names[action] if action < len(action_names) else f"Action_{action}"
-            
-            if detailed:
-                print(f"\nStep {steps + 1}:")
-                print(f"  Position: {state.get('agent_pos', 'Unknown')}")
-                print(f"  Direction: {state.get('direction', 'Unknown')}")
-                print(f"  Action: {action} ({action_name})")
+
             
             # Take action
             next_obs, reward, done, truncated, info = env.step(action)
@@ -496,12 +491,7 @@ def demo_episode(model_path, render=True, save_gif=True, detailed=True, num_epis
             bonus_reward += step_bonus
             total_reward += reward
             steps += 1
-            
-            if detailed:
-                print(f"  Reward: {reward:.3f} (Original: {step_original:.3f}, Bonus: {step_bonus:.3f})")
-                print(f"  Total Reward: {total_reward:.3f}")
-                if 'exploration_progress' in info:
-                    print(f"  Exploration: {info['exploration_progress']:.2%}")
+
             
             state = next_state
             
