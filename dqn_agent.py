@@ -219,52 +219,13 @@ class DQNAgent:
         
     def get_intrinsic_reward(self, state, action, next_state, done):
         """Calculate intrinsic rewards for better exploration."""
-        intrinsic_reward = 0.0
-        
-        # Exploration bonus for visiting new positions
-        agent_pos = tuple(next_state.get('agent_pos', [0, 0]))
-        if agent_pos not in self.visited_positions:
-            self.visited_positions.add(agent_pos)
-            intrinsic_reward += 0.01  # Small reward for exploration
-        
-        # Movement reward (encourage moving vs staying still)
-        moved = (self.last_position is not None) and (agent_pos != self.last_position)
-        if moved:
-            intrinsic_reward += 0.002
-        
-        # Penalize sustained turning-in-place; encourage forward moves that change position
-        is_turn = action in (0, 1)
-        is_forward = action == 2
-        if is_turn and not moved:
-            self.turn_streak += 1
-        else:
-            if moved or is_forward:
-                self.turn_streak = 0
-
-        if self.turn_streak >= 2:
-            intrinsic_reward -= 0.05 * min(10, self.turn_streak - 1)
-        if self.turn_streak >= 6:
-            intrinsic_reward -= 0.5
-            self.turn_streak = 0
-
-        if is_forward and moved:
-            intrinsic_reward += 0.02
-        elif is_forward and not moved:
-            intrinsic_reward -= 0.01
-        
-        self.last_position = agent_pos
-        
-        # Penalize inactivity (if taking 'done' action without completing task)
-        if action == 6 and not done:  # 'done' action
-            intrinsic_reward -= 0.1
-        
-        return intrinsic_reward
+        # Intrinsic shaping moved to environment wrapper; keep zero here
+        return 0.0
     
     def remember(self, state, action, reward, next_state, done, info=None):
         """Store experience with intrinsic reward shaping."""
-        # Add intrinsic reward
-        intrinsic_reward = self.get_intrinsic_reward(state, action, next_state, done) if self.use_intrinsic_reward else 0.0
-        shaped_reward = reward + intrinsic_reward
+        # Intrinsic shaping handled in environment wrapper; use env-provided reward
+        shaped_reward = reward
         
         experience = (state, action, shaped_reward, next_state, done)
         

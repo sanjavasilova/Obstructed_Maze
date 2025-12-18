@@ -169,9 +169,14 @@ class ObstructedMazeWrapper(gym.Wrapper):
             if moved or is_forward:
                 self.turn_in_place_streak = 0
         
+        # Generic movement bonus (transferred intrinsic): reward any position change
+        if moved:
+            bonus += 0.002
+        
         # 1. Exploration bonus for visiting new positions
         if moved and agent_pos not in set(list(self.agent_positions)[:-1]):  # New position
-            bonus += self.exploration_reward
+            bonus += self.exploration_reward  # wrapper shaping
+            bonus += 0.01  # transferred intrinsic exploration bonus
         
         # 2. Check for stuck behavior (oscillating between positions)
         if len(self.agent_positions) >= 4:
@@ -182,6 +187,10 @@ class ObstructedMazeWrapper(gym.Wrapper):
         # 2b. Penalize sustained turning-in-place
         if self.turn_in_place_streak >= 2:
             bonus -= 0.05 * min(10, self.turn_in_place_streak - 1)
+        # Strong penalty for very long turn streaks (transferred intrinsic)
+        if self.turn_in_place_streak >= 6:
+            bonus -= 0.5
+            self.turn_in_place_streak = 0
         
         # 3. Analyze the grid to detect interactions
         grid = obs['image']
@@ -214,16 +223,17 @@ class ObstructedMazeWrapper(gym.Wrapper):
             if agent_pos != prev_pos_for_progress and self._is_moving_towards_exploration(agent_pos, prev_pos_for_progress):
                 bonus += self.progress_reward
         
-        # 6b. Encourage forward movement that changes position
+        # 6b. Encourage forward movement that changes position (wrapper + transferred intrinsic)
         if is_forward and moved:
-            # Extra bonus if this is a newly visited cell
             if agent_pos not in set(self.agent_positions):
                 bonus += 0.03
             else:
                 bonus += 0.01
+            bonus += 0.02  # transferred intrinsic forward-move bonus
         elif is_forward and not moved:
-            bonus -= 0.02
-        
+            # Penalize attempting to move forward without changing position (e.g., into wall/box)
+            bonus -= 0.03  # transferred intrinsic forward-stall penalty
+            
         # 6c. Penalize excessive turning without position change over a short window
         if len(self.action_history) >= 8:
             recent_actions = list(self.action_history)[-8:]
@@ -231,6 +241,10 @@ class ObstructedMazeWrapper(gym.Wrapper):
             recent_positions = list(self.agent_positions)[-8:] if len(self.agent_positions) >= 8 else list(self.agent_positions)
             if recent_turn_ratio >= 0.75 and len(set(recent_positions)) <= 2:
                 bonus -= 0.05
+
+        # 6d. Penalize taking 'done' without task completion (transferred intrinsic)
+        if action == 6 and not done:
+            bonus -= 0.1
         
         # 7. Bonus for successful completion
         if reward > 0:  # Original success reward
