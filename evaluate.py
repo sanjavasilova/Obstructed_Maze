@@ -199,7 +199,7 @@ def evaluate_agent(model_path, num_episodes=100, render=False, save_gif=False,
 
 def assess_behavior_quality(model_path,
                             episodes=10,
-                            max_steps=500,
+                            max_steps=100,
                             spin_window=20,
                             spin_ratio_threshold=0.7,
                             min_unique_positions=3,

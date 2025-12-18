@@ -32,11 +32,15 @@ class ObstructedMazeWrapper(gym.Wrapper):
         
         # Track carrying state
         self.carrying_key = False
+        
+        # Goal position (found on reset)
+        self.goal_pos = None
+        self.grid_size = 14  # Approximate grid size for normalization
 
         # Track game state
         self.initial_obs = None
         self.step_count = 0
-        self.max_steps = 500  # Reasonable limit od 1000 na 500
+        self.max_steps = 100  # Reasonable limit od 1000 na 500 pa na 100
         self.turn_in_place_streak = 0
         self.last_agent_pos = None
         self.spin_warning_streak = 0
@@ -75,10 +79,26 @@ class ObstructedMazeWrapper(gym.Wrapper):
         self.turn_repeat_streak = 0
         self.carrying_key = False
         
+        # Find goal position in the grid
+        self._find_goal_position()
+        
         # Enhanced observation with additional info
         enhanced_obs = self._enhance_observation(obs)
         
         return enhanced_obs, info
+    
+    def _find_goal_position(self):
+        """Find the goal position in the full grid."""
+        self.goal_pos = None
+        if hasattr(self.env, 'unwrapped') and hasattr(self.env.unwrapped, 'grid'):
+            grid = self.env.unwrapped.grid
+            self.grid_size = max(grid.width, grid.height)
+            for x in range(grid.width):
+                for y in range(grid.height):
+                    cell = grid.get(x, y)
+                    if cell is not None and (cell.type == 'goal' or cell.type == 'ball'):
+                        self.goal_pos = (x, y)
+                        return
     
     def step(self, action):
         """Enhanced step with reward shaping."""
@@ -141,15 +161,32 @@ class ObstructedMazeWrapper(gym.Wrapper):
         return enhanced_obs, total_reward, done, truncated, info
     
     def _enhance_observation(self, obs):
-        """Add additional information to observation."""
+        """Add compass information to observation - agent is no longer blind!"""
         enhanced_obs = obs.copy()
         
         # Add agent position to tracking
         agent_pos = tuple(self.env.agent_pos) if hasattr(self.env, 'agent_pos') else (0, 0)
         self.agent_positions.append(agent_pos)
         
-        # Add exploration statistics
+        # COMPASS INFO: Where am I? (normalized position)
+        agent_x, agent_y = agent_pos
         enhanced_obs['agent_pos'] = list(agent_pos)
+        enhanced_obs['agent_pos_normalized'] = [
+            agent_x / self.grid_size,  # Normalized x
+            agent_y / self.grid_size   # Normalized y
+        ]
+        
+        # COMPASS INFO: Where's the goal? (relative direction, normalized)
+        if self.goal_pos is not None:
+            goal_x, goal_y = self.goal_pos
+            enhanced_obs['goal_direction'] = [
+                (goal_x - agent_x) / self.grid_size,  # Relative x to goal
+                (goal_y - agent_y) / self.grid_size   # Relative y to goal
+            ]
+        else:
+            enhanced_obs['goal_direction'] = [0.0, 0.0]
+        
+        # Additional info
         enhanced_obs['step_count'] = self.step_count
         enhanced_obs['unique_positions'] = len(set(self.agent_positions))
         
@@ -372,7 +409,7 @@ class CurriculumLearningWrapper(gym.Wrapper):
         
         # Adjust max steps based on difficulty
         if hasattr(self.env, 'max_steps'):
-            base_steps = 1000
+            base_steps = 100
             self.env.max_steps = int(base_steps * (0.5 + 0.5 * self.current_difficulty))
         
         info['curriculum_difficulty'] = self.current_difficulty

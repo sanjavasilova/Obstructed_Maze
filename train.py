@@ -14,15 +14,18 @@ from enhanced_env_wrapper import create_enhanced_env
 
 
 def preprocess_observation(obs):
-    """Preprocess the observation from the environment."""
+    """Preprocess the observation from the environment with compass info."""
     return {
         'image': obs['image'],
         'direction': obs['direction'],
-        'agent_pos': obs.get('agent_pos', [0, 0])
+        'agent_pos': obs.get('agent_pos', [0, 0]),
+        # COMPASS INFO: Where am I? Where's the goal?
+        'agent_pos_normalized': obs.get('agent_pos_normalized', [0.0, 0.0]),
+        'goal_direction': obs.get('goal_direction', [0.0, 0.0])
     }
 
 
-def train_agent(episodes=2000, max_steps=1000, save_interval=250,
+def train_agent(episodes=2000, max_steps=100, save_interval=250,
                         model_dir='models', log_dir='logs',
                         use_curriculum=True, use_reward_shaping=True,
                         load_checkpoint=None):
@@ -59,13 +62,15 @@ def train_agent(episodes=2000, max_steps=1000, save_interval=250,
     print(f"  Max steps per episode: {max_steps}")
     print(f"  Reward shaping: {use_reward_shaping}")
     print(f"  Curriculum learning: {use_curriculum}")
+    print(f"  Compass info: ENABLED (agent knows position + goal direction)")
+    print(f"  Early stopping: Loss increase or success rate drop")
     print(f"  Device: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
     
     # Create agent with optimized hyperparameters for EXPLORATION
     agent = DQNAgent(
         obs_shape=obs_shape,
         action_size=action_size,
-        lr=1e-4,                    # Lower learning rate for stability
+        lr=5e-5,                    # Lower learning rate for stability
         gamma=0.99,                 # Standard discount factor
         epsilon=1.0,                # Start with full exploration
         epsilon_decay=0.9995,       # SLOWER decay - maintain exploration much longer!
@@ -101,6 +106,14 @@ def train_agent(episodes=2000, max_steps=1000, save_interval=250,
     best_avg_reward = float('-inf')
     consecutive_successes = 0
     training_start_time = time.time()
+    
+    # Early stopping tracking
+    best_avg_loss = float('inf')
+    loss_increasing_count = 0
+    success_dropping_count = 0
+    patience_loss = 5          # Stop if loss increases for this many checks
+    patience_success = 3       # Stop if success rate drops for this many checks
+    min_episodes_before_stop = 200  # Don't check early stopping until this many episodes
     
     print(f"\n TRAINING STARTED:")
     print(f"  Agent epsilon: {agent.epsilon:.4f}")
@@ -234,18 +247,47 @@ def train_agent(episodes=2000, max_steps=1000, save_interval=250,
                       f"Steps: {steps}, Consecutive: {consecutive_successes}")
             
             # Early stopping conditions
-            if episode > 1000:
-                recent_success_rate = np.mean(success_rate_window[-100:])
+            if episode > min_episodes_before_stop and episode % 100 == 0:
+                recent_success_rate = np.mean(success_rate_window[-100:]) if len(success_rate_window) >= 100 else np.mean(success_rate_window)
+                recent_avg_loss = np.mean(losses[-100:]) if len(losses) >= 100 else np.mean(losses) if losses else 0
+                
+                # Check for excellent performance
                 if recent_success_rate > 0.85:
-                    print(f"\nEXCELLENT PERFORMANCE ACHIEVED!")
+                    print(f"\n🎉 EXCELLENT PERFORMANCE ACHIEVED!")
                     print(f"   Success rate: {recent_success_rate:.2%}")
                     print(f"   Stopping training early at episode {episode}")
                     break
                 elif consecutive_successes >= 20:
-                    print(f"\nCONSISTENT SUCCESS ACHIEVED!")
+                    print(f"\n🎉 CONSISTENT SUCCESS ACHIEVED!")
                     print(f"   {consecutive_successes} consecutive successes")
                     print(f"   Stopping training early at episode {episode}")
                     break
+                
+                # Check if loss is increasing (model learning wrong direction)
+                if recent_avg_loss > 0:
+                    if recent_avg_loss < best_avg_loss * 0.95:  # Improved by at least 5%
+                        best_avg_loss = recent_avg_loss
+                        loss_increasing_count = 0
+                    elif recent_avg_loss > best_avg_loss * 1.1:  # Increased by more than 10%
+                        loss_increasing_count += 1
+                        print(f"⚠️ WARNING: Loss increasing ({loss_increasing_count}/{patience_loss})")
+                        if loss_increasing_count >= patience_loss:
+                            print(f"\n🛑 EARLY STOP: Loss has been increasing!")
+                            print(f"   Best loss: {best_avg_loss:.4f}, Current: {recent_avg_loss:.4f}")
+                            print(f"   Model may be learning in wrong direction.")
+                            break
+                
+                # Check if success rate is dropping
+                if best_success_rate > 0.1:  # Only check after some initial success
+                    if recent_success_rate < best_success_rate * 0.7:  # Dropped by more than 30%
+                        success_dropping_count += 1
+                        print(f"⚠️ WARNING: Success rate dropping ({success_dropping_count}/{patience_success})")
+                        if success_dropping_count >= patience_success:
+                            print(f"\n🛑 EARLY STOP: Success rate has been dropping!")
+                            print(f"   Best: {best_success_rate:.2%}, Current: {recent_success_rate:.2%}")
+                            break
+                    else:
+                        success_dropping_count = 0
     
     except KeyboardInterrupt:
         print(f"\nTraining interrupted at episode {episode}")

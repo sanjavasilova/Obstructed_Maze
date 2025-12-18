@@ -8,86 +8,47 @@ import torch.nn.functional as F
 
 
 class DQNNetwork(nn.Module):
-    """Deep Q-Network with improved architecture and attention mechanism."""
+    """Simple DQN with compass info - agent knows where it is and where goal is!"""
     
-    def __init__(self, obs_shape, action_size, hidden_size=512):
+    def __init__(self, obs_shape, action_size, hidden_size=256):
         super(DQNNetwork, self).__init__()
         
-        # Enhanced CNN layers with residual connections
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
-        self.conv4 = nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1)
+        # Simple 2-layer CNN appropriate for 7x7 input
+        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)   # 7x7 -> 7x7
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)  # 7x7 -> 7x7
         
-        # Batch normalization for stable training
-        self.bn1 = nn.BatchNorm2d(32)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.bn3 = nn.BatchNorm2d(128)
-        self.bn4 = nn.BatchNorm2d(128)
+        # Conv output: 64 * 7 * 7 = 3136
+        conv_out_size = 64 * 7 * 7
         
-        # Attention mechanism for important features
-        self.attention = nn.Conv2d(128, 1, kernel_size=1)
+        # Input size: conv_output + direction(4) + compass(4: agent_x, agent_y, goal_rel_x, goal_rel_y)
+        total_input_size = conv_out_size + 4 + 4
         
-        # Calculate conv output size: 7x7x128 = 6272
-        conv_out_size = 7 * 7 * 128
+        # Fully connected layers
+        self.fc1 = nn.Linear(total_input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, action_size)
         
-        # Add direction input (4 possible directions)
-        total_input_size = conv_out_size + 4
-        
-        # Dueling DQN architecture
-        self.feature_layer = nn.Linear(total_input_size, hidden_size)
-        
-        # Value stream
-        self.value_stream = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_size // 2, 1)
-        )
-        
-        # Advantage stream
-        self.advantage_stream = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_size // 2, action_size)
-        )
-        
-        self.dropout = nn.Dropout(0.1)
-        
-    def forward(self, image, direction):
+    def forward(self, image, direction, compass):
         batch_size = image.size(0)
         
         # Process image: (batch, 7, 7, 3) -> (batch, 3, 7, 7)
         x = image.permute(0, 3, 1, 2).float() / 255.0
         
-        # Enhanced CNN with residual connections and batch norm
-        x1 = F.relu(self.bn1(self.conv1(x)))
-        x2 = F.relu(self.bn2(self.conv2(x1)))
-        x3 = F.relu(self.bn3(self.conv3(x2)))
-        x4 = F.relu(self.bn4(self.conv4(x3)))
+        # Simple CNN - 2 layers
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
         
-        # Apply attention mechanism
-        attention_weights = torch.sigmoid(self.attention(x4))
-        x4_attended = x4 * attention_weights
-        
-        # Flatten conv output
-        x = x4_attended.reshape(batch_size, -1)
+        # Flatten
+        x = x.view(batch_size, -1)
         
         # One-hot encode direction
         direction_onehot = F.one_hot(direction, num_classes=4).float()
         
-        # Concatenate image features and direction
-        x = torch.cat([x, direction_onehot], dim=1)
+        # Concatenate: image features + direction + compass info
+        x = torch.cat([x, direction_onehot, compass], dim=1)
         
-        # Feature extraction
-        features = F.relu(self.feature_layer(x))
-        features = self.dropout(features)
-        
-        # Dueling DQN: V(s) and A(s,a)
-        value = self.value_stream(features)
-        advantage = self.advantage_stream(features)
-        
-        # Q(s,a) = V(s) + A(s,a) - mean(A(s,a))
-        q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
+        # Fully connected layers
+        x = F.relu(self.fc1(x))
+        q_values = self.fc2(x)
         
         return q_values
 
@@ -206,7 +167,7 @@ class DQNAgent:
         
         print(f"DQN Agent initialized:")
         print(f"  Device: {self.device}")
-        print(f"  Architecture: Dueling DQN with Attention")
+        print(f"  Architecture: 2-layer CNN + compass (agent_pos + goal_direction)")
         print(f"  Prioritized Replay: {use_prioritized_replay}")
         print(f"  Learning rate: {lr}")
         print(f"  Memory size: {memory_size}")
@@ -235,7 +196,7 @@ class DQNAgent:
             self.memory.append(experience)
     
     def act(self, state, training=True):
-        """Enhanced action selection with epsilon-greedy."""
+        """Enhanced action selection with epsilon-greedy and compass info."""
         # Ensure proper mode for dropout/batchnorm
         self.set_mode(training)
         # Epsilon-greedy exploration
@@ -247,7 +208,12 @@ class DQNAgent:
             image = torch.from_numpy(image_np).unsqueeze(0).to(self.device)
             direction = torch.tensor([state['direction']], dtype=torch.long, device=self.device)
             
-            q_values = self.q_network(image, direction)
+            # Compass info: [agent_x, agent_y, goal_rel_x, goal_rel_y]
+            agent_pos = state.get('agent_pos_normalized', [0.0, 0.0])
+            goal_dir = state.get('goal_direction', [0.0, 0.0])
+            compass = torch.tensor([agent_pos + goal_dir], dtype=torch.float32, device=self.device)
+            
+            q_values = self.q_network(image, direction, compass)
             
             # Add small amount of noise for better exploration during training
             if training and self.epsilon > 0.1:
@@ -277,19 +243,29 @@ class DQNAgent:
             weights = torch.ones(self.batch_size).to(self.device)
         
         # Prepare batch data
-        states = {'image': [], 'direction': []}
+        states = {'image': [], 'direction': [], 'compass': []}
         actions = []
         rewards = []
-        next_states = {'image': [], 'direction': []}
+        next_states = {'image': [], 'direction': [], 'compass': []}
         dones = []
         
         for state, action, reward, next_state, done in experiences:
             states['image'].append(state['image'])
             states['direction'].append(state['direction'])
+            # Compass: [agent_x, agent_y, goal_rel_x, goal_rel_y]
+            agent_pos = state.get('agent_pos_normalized', [0.0, 0.0])
+            goal_dir = state.get('goal_direction', [0.0, 0.0])
+            states['compass'].append(agent_pos + goal_dir)
+            
             actions.append(action)
             rewards.append(reward)
+            
             next_states['image'].append(next_state['image'])
             next_states['direction'].append(next_state['direction'])
+            next_agent_pos = next_state.get('agent_pos_normalized', [0.0, 0.0])
+            next_goal_dir = next_state.get('goal_direction', [0.0, 0.0])
+            next_states['compass'].append(next_agent_pos + next_goal_dir)
+            
             dones.append(done)
         
         # Convert to tensors
@@ -299,17 +275,19 @@ class DQNAgent:
         next_state_images = torch.from_numpy(next_state_images_np).to(self.device)
         state_directions = torch.tensor(states['direction'], dtype=torch.long, device=self.device)
         next_state_directions = torch.tensor(next_states['direction'], dtype=torch.long, device=self.device)
+        state_compass = torch.tensor(states['compass'], dtype=torch.float32, device=self.device)
+        next_state_compass = torch.tensor(next_states['compass'], dtype=torch.float32, device=self.device)
         actions = torch.tensor(actions, dtype=torch.long, device=self.device)
         rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
         dones = torch.tensor(dones, dtype=torch.bool, device=self.device)
         
-        # Current Q values
-        current_q_values = self.q_network(state_images, state_directions).gather(1, actions.unsqueeze(1))
+        # Current Q values (with compass info)
+        current_q_values = self.q_network(state_images, state_directions, state_compass).gather(1, actions.unsqueeze(1))
         
         # Double DQN: use main network to select actions, target network to evaluate
         with torch.no_grad():
-            next_actions = self.q_network(next_state_images, next_state_directions).argmax(1)
-            next_q_values = self.target_network(next_state_images, next_state_directions).gather(1, next_actions.unsqueeze(1)).squeeze()
+            next_actions = self.q_network(next_state_images, next_state_directions, next_state_compass).argmax(1)
+            next_q_values = self.target_network(next_state_images, next_state_directions, next_state_compass).gather(1, next_actions.unsqueeze(1)).squeeze()
             target_q_values = rewards + (self.gamma * next_q_values * ~dones)
         
         # Compute TD errors for prioritized replay
