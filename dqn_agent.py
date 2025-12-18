@@ -235,7 +235,7 @@ class DQNAgent:
             self.memory.append(experience)
     
     def act(self, state, training=True):
-        """Enhanced action selection with epsilon-greedy and UCB exploration."""
+        """Enhanced action selection with epsilon-greedy."""
         # Ensure proper mode for dropout/batchnorm
         self.set_mode(training)
         # Epsilon-greedy exploration

@@ -20,19 +20,23 @@ class ObstructedMazeWrapper(gym.Wrapper):
         self.keys_picked = set()
         self.boxes_opened = set()
         
-        # Reward shaping parameters
-        self.exploration_reward = 0.002
-        self.key_pickup_reward = 0.3
-        self.door_open_reward = 0.2
-        self.box_open_reward = 0.1
-        self.progress_reward = 0.01
-        self.stuck_penalty = -0.05
-        self.step_penalty = 0.005
+        # Reward shaping parameters - IMPROVED for better learning
+        self.exploration_reward = 0.01       # Increased from 0.002
+        self.key_pickup_reward = 2.0         # Massively increased from 0.3 - keys are critical!
+        self.door_open_reward = 1.5          # Massively increased from 0.2 - doors are critical!
+        self.box_open_reward = 0.5           # Increased from 0.1
+        self.progress_reward = 0.02          # Doubled from 0.01
+        self.stuck_penalty = -0.03           # Reduced from -0.05 (was too harsh)
+        self.step_penalty = 0.001            # Reduced from 0.005 (was discouraging movement)
+        self.carrying_key_bonus = 0.005      # Small bonus each step while carrying key
+        
+        # Track carrying state
+        self.carrying_key = False
 
         # Track game state
         self.initial_obs = None
         self.step_count = 0
-        self.max_steps = 1000  # Reasonable limit
+        self.max_steps = 500  # Reasonable limit od 1000 na 500
         self.turn_in_place_streak = 0
         self.last_agent_pos = None
         self.spin_warning_streak = 0
@@ -69,6 +73,7 @@ class ObstructedMazeWrapper(gym.Wrapper):
         self.spin_warning_streak = 0
         self.last_turn_action = None
         self.turn_repeat_streak = 0
+        self.carrying_key = False
         
         # Enhanced observation with additional info
         enhanced_obs = self._enhance_observation(obs)
@@ -169,14 +174,14 @@ class ObstructedMazeWrapper(gym.Wrapper):
             if moved or is_forward:
                 self.turn_in_place_streak = 0
         
-        # Generic movement bonus (transferred intrinsic): reward any position change
+        # Generic movement bonus: reward any position change
         if moved:
-            bonus += 0.002
+            bonus += 0.005
         
         # 1. Exploration bonus for visiting new positions
         if moved and agent_pos not in set(list(self.agent_positions)[:-1]):  # New position
-            bonus += self.exploration_reward  # wrapper shaping
-            bonus += 0.01  # transferred intrinsic exploration bonus
+            bonus += self.exploration_reward
+            bonus += 0.02  # Extra bonus for new cell discovery
         
         # 2. Check for stuck behavior (oscillating between positions)
         if len(self.agent_positions) >= 4:
@@ -184,28 +189,37 @@ class ObstructedMazeWrapper(gym.Wrapper):
             if len(set(recent_positions)) <= 2:  # Oscillating between 2 positions
                 bonus += self.stuck_penalty
         
-        # 2b. Penalize sustained turning-in-place
-        if self.turn_in_place_streak >= 2:
-            bonus -= 0.05 * min(10, self.turn_in_place_streak - 1)
-        # Strong penalty for very long turn streaks (transferred intrinsic)
-        if self.turn_in_place_streak >= 6:
-            bonus -= 0.5
+        # 2b. Penalize sustained turning-in-place (reduced penalties)
+        if self.turn_in_place_streak >= 3:
+            bonus -= 0.02 * min(5, self.turn_in_place_streak - 2)
+        if self.turn_in_place_streak >= 8:
+            bonus -= 0.3
             self.turn_in_place_streak = 0
         
         # 3. Analyze the grid to detect interactions
         grid = obs['image']
         
-        # 4. Reward for picking up objects (keys)
+        # 4. Reward for picking up objects (keys) - CRITICAL for maze solving!
         if action == 3:  # pickup action
-            # Check if there's a key in front of the agent
             front_pos = self._get_front_position(agent_pos, agent_dir)
             if self._is_valid_position(front_pos, grid.shape):
                 front_cell = grid[front_pos[1], front_pos[0]]
                 if self._is_key(front_cell) and front_pos not in self.keys_picked:
                     bonus += self.key_pickup_reward
                     self.keys_picked.add(front_pos)
+                    self.carrying_key = True
+                    print(f"🔑 KEY PICKED UP at step {self.step_count}!")
         
-        # 5. Reward for opening doors
+        # Check if agent is carrying a key (check environment state)
+        if hasattr(self.env, 'unwrapped') and hasattr(self.env.unwrapped, 'carrying'):
+            if self.env.unwrapped.carrying is not None:
+                self.carrying_key = True
+                # Give small continuous bonus for carrying key
+                bonus += self.carrying_key_bonus
+            else:
+                self.carrying_key = False
+        
+        # 5. Reward for opening doors - CRITICAL for maze solving!
         if action == 5:  # toggle action
             front_pos = self._get_front_position(agent_pos, agent_dir)
             if self._is_valid_position(front_pos, grid.shape):
@@ -213,45 +227,80 @@ class ObstructedMazeWrapper(gym.Wrapper):
                 if self._is_door(front_cell) and front_pos not in self.doors_opened:
                     bonus += self.door_open_reward
                     self.doors_opened.add(front_pos)
+                    print(f"🚪 DOOR OPENED at step {self.step_count}!")
                 elif self._is_box(front_cell) and front_pos not in self.boxes_opened:
                     bonus += self.box_open_reward
                     self.boxes_opened.add(front_pos)
+                    print(f"📦 BOX OPENED at step {self.step_count}!")
         
-        # 6. Progress reward for moving towards unexplored areas (only if actually moved)
+        # 6. Progress reward for moving towards unexplored areas
         if len(self.agent_positions) > 0:
             prev_pos_for_progress = self.agent_positions[-1]
             if agent_pos != prev_pos_for_progress and self._is_moving_towards_exploration(agent_pos, prev_pos_for_progress):
                 bonus += self.progress_reward
         
-        # 6b. Encourage forward movement that changes position (wrapper + transferred intrinsic)
+        # 6b. Encourage forward movement that changes position
         if is_forward and moved:
             if agent_pos not in set(self.agent_positions):
                 bonus += 0.03
             else:
                 bonus += 0.01
-            bonus += 0.02  # transferred intrinsic forward-move bonus
         elif is_forward and not moved:
-            # Penalize attempting to move forward without changing position (e.g., into wall/box)
-            bonus -= 0.03  # transferred intrinsic forward-stall penalty
+            # Reduced penalty for hitting obstacles (was too harsh)
+            bonus -= 0.01
             
-        # 6c. Penalize excessive turning without position change over a short window
+        # 6c. Penalize excessive turning without position change
         if len(self.action_history) >= 8:
             recent_actions = list(self.action_history)[-8:]
             recent_turn_ratio = sum(1 for a in recent_actions if a in (0, 1)) / 8.0
             recent_positions = list(self.agent_positions)[-8:] if len(self.agent_positions) >= 8 else list(self.agent_positions)
             if recent_turn_ratio >= 0.75 and len(set(recent_positions)) <= 2:
-                bonus -= 0.05
+                bonus -= 0.03
 
-        # 6d. Penalize taking 'done' without task completion (transferred intrinsic)
+        # 6d. Penalize taking 'done' without task completion
         if action == 6 and not done:
-            bonus -= 0.1
+            bonus -= 0.05
         
-        # 7. Bonus for successful completion
+        # 7. Reward for seeing important objects (encourages investigation)
+        visible_objects = self._scan_visible_objects(grid)
+        if visible_objects['key_visible'] and not self.carrying_key:
+            bonus += 0.005  # Small bonus for seeing a key
+        if visible_objects['door_visible'] and self.carrying_key:
+            bonus += 0.005  # Small bonus for seeing a door while carrying key
+        if visible_objects['goal_visible']:
+            bonus += 0.01  # Bonus for seeing the goal
+        
+        # 8. Bonus for successful completion
         if reward > 0:  # Original success reward
-            bonus += 50.0  # Additional bonus for finding the ball
-            print(f"🎉 SUCCESS! Agent completed the maze in {self.step_count} steps!")
+            # Scale bonus based on how fast the agent completed
+            efficiency_bonus = max(10.0, 100.0 - self.step_count * 0.1)
+            bonus += efficiency_bonus
+            print(f"🎉 SUCCESS! Agent completed the maze in {self.step_count} steps! Bonus: {efficiency_bonus:.1f}")
         
         return bonus
+    
+    def _scan_visible_objects(self, grid):
+        """Scan the visible 7x7 grid for important objects."""
+        result = {
+            'key_visible': False,
+            'door_visible': False,
+            'goal_visible': False,
+            'box_visible': False
+        }
+        
+        for y in range(grid.shape[0]):
+            for x in range(grid.shape[1]):
+                cell = grid[y, x]
+                if cell[0] == 5:  # Key
+                    result['key_visible'] = True
+                elif cell[0] == 4:  # Door
+                    result['door_visible'] = True
+                elif cell[0] == 8:  # Goal/Ball
+                    result['goal_visible'] = True
+                elif cell[0] == 7:  # Box
+                    result['box_visible'] = True
+        
+        return result
     
     def _get_front_position(self, pos, direction):
         """Get the position in front of the agent based on direction."""

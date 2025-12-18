@@ -61,15 +61,15 @@ def train_agent(episodes=2000, max_steps=1000, save_interval=250,
     print(f"  Curriculum learning: {use_curriculum}")
     print(f"  Device: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
     
-    # Create agent with optimized hyperparameters
+    # Create agent with optimized hyperparameters for EXPLORATION
     agent = DQNAgent(
         obs_shape=obs_shape,
         action_size=action_size,
-        lr=3e-4,                    # Slightly higher learning rate
-        gamma=0.995,                # High discount for long-term rewards
+        lr=1e-4,                    # Lower learning rate for stability
+        gamma=0.99,                 # Standard discount factor
         epsilon=1.0,                # Start with full exploration
-        epsilon_decay=0.997,        # Faster decay to reach exploitation
-        epsilon_min=0.02,           # Lower minimum for stronger exploitation
+        epsilon_decay=0.9995,       # SLOWER decay - maintain exploration much longer!
+        epsilon_min=0.05,           # Higher minimum - always explore a bit
         memory_size=200000,         # Large replay buffer
         batch_size=64,              # Larger batch size
         target_update=500,          # Frequent target updates
