@@ -221,6 +221,8 @@ class ObstructedMazeWrapper(gym.Wrapper):
                 bonus += 0.03
             else:
                 bonus += 0.01
+        elif is_forward and not moved:
+            bonus -= 0.02
         
         # 6c. Penalize excessive turning without position change over a short window
         if len(self.action_history) >= 8:

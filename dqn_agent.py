@@ -155,7 +155,7 @@ class DQNAgent:
     def __init__(self, obs_shape, action_size, lr=1e-4, gamma=0.99, 
                  epsilon=1.0, epsilon_decay=0.997, epsilon_min=0.02,
                  memory_size=100000, batch_size=32, target_update=1000,
-                 use_prioritized_replay=True, use_noisy_nets=False):
+                 use_prioritized_replay=True, use_noisy_nets=False, use_intrinsic_reward=False):
         
         self.obs_shape = obs_shape
         self.action_size = action_size
@@ -167,6 +167,7 @@ class DQNAgent:
         self.batch_size = batch_size
         self.target_update = target_update
         self.use_prioritized_replay = use_prioritized_replay
+        self.use_intrinsic_reward = use_intrinsic_reward
         
         # Device setup
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -262,7 +263,7 @@ class DQNAgent:
     def remember(self, state, action, reward, next_state, done, info=None):
         """Store experience with intrinsic reward shaping."""
         # Add intrinsic reward
-        intrinsic_reward = self.get_intrinsic_reward(state, action, next_state, done)
+        intrinsic_reward = self.get_intrinsic_reward(state, action, next_state, done) if self.use_intrinsic_reward else 0.0
         shaped_reward = reward + intrinsic_reward
         
         experience = (state, action, shaped_reward, next_state, done)
