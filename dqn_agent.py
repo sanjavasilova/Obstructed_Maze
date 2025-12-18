@@ -37,8 +37,8 @@ class DQNNetwork(nn.Module):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         
-        # Flatten
-        x = x.view(batch_size, -1)
+        # Flatten (use reshape instead of view to handle non-contiguous tensors)
+        x = x.reshape(batch_size, -1)
         
         # One-hot encode direction
         direction_onehot = F.one_hot(direction, num_classes=4).float()
