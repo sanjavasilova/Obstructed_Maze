@@ -23,7 +23,7 @@ class ObstructedMazeWrapper(gym.Wrapper):
         # Reward shaping parameters - IMPROVED for better learning
         self.exploration_reward = 0.01       # Increased from 0.002
         self.key_pickup_reward = 2.0         # Massively increased from 0.3 - keys are critical!
-        self.door_open_reward = 1.5          # Massively increased from 0.2 - doors are critical!
+        self.door_open_reward = 0.2          # 0.2
         self.box_open_reward = 0.5           # Increased from 0.1
         self.progress_reward = 0.02          # Doubled from 0.01
         self.stuck_penalty = -0.03           # Reduced from -0.05 (was too harsh)
@@ -191,7 +191,7 @@ class ObstructedMazeWrapper(gym.Wrapper):
         
         # 2b. Penalize sustained turning-in-place (reduced penalties)
         if self.turn_in_place_streak >= 3:
-            bonus -= 0.02 * min(5, self.turn_in_place_streak - 2)
+            bonus -= 0.2
         if self.turn_in_place_streak >= 8:
             bonus -= 0.3
             self.turn_in_place_streak = 0
