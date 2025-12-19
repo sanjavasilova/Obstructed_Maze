@@ -70,7 +70,7 @@ def train_agent(episodes=2000, max_steps=100, save_interval=250,
     agent = DQNAgent(
         obs_shape=obs_shape,
         action_size=action_size,
-        lr=5e-5,                    # Lower learning rate for stability
+        lr=1e-5, #5e-5                    # Lower learning rate for stability
         gamma=0.99,                 # Standard discount factor
         epsilon=1.0,                # Start with full exploration
         epsilon_decay=0.9995,       # SLOWER decay - maintain exploration much longer!

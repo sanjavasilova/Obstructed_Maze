@@ -44,6 +44,15 @@ python train.py --no_curriculum
 
 # Custom training parameters
 python train.py --episodes 3000 --max_steps 500 --save_interval 200
+
+# Without curriculum learning
+python train_ppo.py --no_curriculum --episodes 2000 --max_steps 1000
+
+# Without curriculum AND without reward shaping
+python train_ppo.py --no_curriculum --no_reward_shaping
+
+# Without curriculum but with specific update frequency
+python train_ppo.py --no_curriculum --update_frequency 2048
 ```
 
 Training will:
@@ -75,7 +84,16 @@ python evaluate.py --model_path models/dqn_final.pth --no_curriculum --demo --de
 
 ```bash
 # Launch TensorBoard (in separate terminal)
+
+# View PPO logs
+tensorboard --logdir logs_ppo
+
+# View DQN logs
 tensorboard --logdir logs
+
+# View both simultaneously
+tensorboard --logdir=logs,logs_ppo
+
 ```
 
 Then open http://localhost:6006 to view training metrics in real-time.
