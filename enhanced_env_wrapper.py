@@ -58,7 +58,7 @@ class ObstructedMazeWrapper(gym.Wrapper):
         # Track game state
         self.initial_obs = None
         self.step_count = 0
-        self.max_steps = 500  # Reasonable limit od 1000 na 500 pa na 100, go vrativ pak na 500 :)
+        self.max_steps = 2500  # ObstructedMaze-Full needs up to 3600 steps - 2500 is a reasonable limit
         self.turn_in_place_streak = 0
         self.last_agent_pos = None
         self.spin_warning_streak = 0
@@ -112,7 +112,7 @@ class ObstructedMazeWrapper(gym.Wrapper):
         return enhanced_obs, info
     
     def _find_goal_position(self):
-        """Find the goal position in the full grid."""
+        """Find the BLUE ball position in the full grid (the actual goal)."""
         self.goal_pos = None
         if hasattr(self.env, 'unwrapped') and hasattr(self.env.unwrapped, 'grid'):
             grid = self.env.unwrapped.grid
@@ -120,14 +120,43 @@ class ObstructedMazeWrapper(gym.Wrapper):
             for x in range(grid.width):
                 for y in range(grid.height):
                     cell = grid.get(x, y)
-                    if cell is not None and (cell.type == 'goal' or cell.type == 'ball'):
-                        self.goal_pos = (x, y)
-                        return
+                    if cell is not None:
+                        # Look for the BLUE ball specifically (color index 1 = blue)
+                        # Green balls are obstacles, blue ball is the goal
+                        if cell.type == 'ball' and hasattr(cell, 'color'):
+                            # MiniGrid color: 'blue' or color index 1
+                            if cell.color == 'blue' or cell.color == 1:
+                                self.goal_pos = (x, y)
+                                return
+                        # Also check for goal type (fallback)
+                        elif cell.type == 'goal':
+                            self.goal_pos = (x, y)
+                            return
     
     def step(self, action):
         """Enhanced step with reward shaping."""
+        # IMPORTANT: Capture state BEFORE action for accurate reward detection
+        pre_action_carrying = None
+        pre_action_door_locked = {}
+
+        if hasattr(self.env, 'unwrapped'):
+            pre_action_carrying = self.env.unwrapped.carrying
+
+            # If toggle action, check door state before action
+            if action == 5:  # toggle
+                agent_pos = tuple(self.env.unwrapped.agent_pos)
+                agent_dir = self.env.unwrapped.agent_dir
+                front_pos = self._get_front_position(agent_pos, agent_dir)
+                door_obj = self.env.unwrapped.grid.get(*front_pos) if self._is_valid_grid_pos(front_pos) else None
+                if door_obj and hasattr(door_obj, 'type') and door_obj.type == 'door':
+                    pre_action_door_locked[front_pos] = getattr(door_obj, 'is_locked', False)
+
         obs, reward, done, truncated, info = self.env.step(action)
-        
+
+        # Store pre-action state in info for reward calculation
+        info['_pre_action_carrying'] = pre_action_carrying
+        info['_pre_action_door_locked'] = pre_action_door_locked
+
         self.step_count += 1
         # Track action for behavior diagnostics
         self.action_history.append(action)
@@ -145,7 +174,7 @@ class ObstructedMazeWrapper(gym.Wrapper):
         
         # Calculate shaped reward
         shaped_reward = reward  # Original reward (1 for success, 0 otherwise)
-        bonus_reward = self._calculate_bonus_reward(obs, action, reward, done)
+        bonus_reward = self._calculate_bonus_reward(obs, action, reward, done, info)
         total_reward = shaped_reward + bonus_reward
         
         # Add step penalty to encourage efficiency
@@ -172,13 +201,19 @@ class ObstructedMazeWrapper(gym.Wrapper):
             'spin_warning': spin_warning
         })
 
-        # If spinning persists, truncate episode with a penalty to prevent endless loops
+        # If spinning persists AND no progress, truncate episode to prevent endless loops
+        # More lenient: require 10 consecutive spin warnings (not 3) and check for actual stuck behavior
         if spin_warning:
             self.spin_warning_streak += 1
         else:
             self.spin_warning_streak = 0
-        if self.spin_warning_streak >= 3:
-            total_reward -= 1.0
+
+        # Only truncate if truly stuck: many consecutive spins AND not visiting new positions
+        recent_unique = len(set(list(self.agent_positions)[-20:])) if len(self.agent_positions) >= 20 else len(set(self.agent_positions))
+        truly_stuck = self.spin_warning_streak >= 10 and recent_unique <= 3
+
+        if truly_stuck:
+            total_reward -= 0.5  # Reduced penalty (was -1.0)
             truncated = True
             info['spin_truncated'] = True
         
@@ -223,9 +258,13 @@ class ObstructedMazeWrapper(gym.Wrapper):
         
         return enhanced_obs
     
-    def _calculate_bonus_reward(self, obs, action, reward, done):
+    def _calculate_bonus_reward(self, obs, action, reward, done, info=None):
         """Calculate bonus reward based on agent progress and exploration."""
         bonus = 0.0
+
+        # Get pre-action state from info (captured before action executed)
+        pre_action_carrying = info.get('_pre_action_carrying') if info else None
+        pre_action_door_locked = info.get('_pre_action_door_locked', {}) if info else {}
         
         # agent_pos = tuple(self.env.agent_pos) if hasattr(self.env, 'agent_pos') else (0, 0)
         agent_pos = tuple(self.env.unwrapped.agent_pos) if hasattr(self.env.unwrapped, 'agent_pos') else (0, 0)
@@ -350,23 +389,18 @@ class ObstructedMazeWrapper(gym.Wrapper):
             front_pos = self._get_front_position(agent_pos, agent_dir)
             if self._is_valid_position(front_pos, grid.shape):
                 front_cell = grid[front_pos[1], front_pos[0]]
-                # if self._is_door(front_cell) and front_pos not in self.doors_opened:
-                #     bonus += self.door_open_reward
-                #     self.doors_opened.add(front_pos)
-                #     print(f"🚪 DOOR OPENED at step {self.step_count}!")
+
                 if self._is_door(front_cell) and front_pos not in self.doors_opened:
-                    # Check if door was locked and agent has key
-                    door_obj = self.env.unwrapped.grid.get(*front_pos)
-                    carrying = self.env.unwrapped.carrying
+                    # Use PRE-ACTION state to detect unlock (state captured BEFORE action executed)
+                    was_locked = pre_action_door_locked.get(front_pos, False)
+                    had_key = pre_action_carrying and getattr(pre_action_carrying, 'type', None) == 'key'
 
-                    was_locked = door_obj and getattr(door_obj, 'is_locked', False)
-                    has_key = carrying and getattr(carrying, 'type', None) == 'key'
-
-                    if was_locked and has_key:
+                    if was_locked and had_key:
                         bonus += 50.0  # HUGE - unlocked with key!
                         print(f"🚪🔑 LOCKED DOOR UNLOCKED WITH KEY at step {self.step_count}!")
                     else:
-                        # Regular door (unlocked) - no reward, just message
+                        # Door was already unlocked or no key needed
+                        bonus += self.door_open_reward  # Small reward for opening any door
                         print(f"🚪 DOOR OPENED at step {self.step_count}!")
 
                     self.doors_opened.add(front_pos)
@@ -466,9 +500,17 @@ class ObstructedMazeWrapper(gym.Wrapper):
         return pos
     
     def _is_valid_position(self, pos, grid_shape):
-        """Check if position is within grid bounds."""
+        """Check if position is within observation grid bounds."""
         x, y = pos
         return 0 <= x < grid_shape[1] and 0 <= y < grid_shape[0]
+
+    def _is_valid_grid_pos(self, pos):
+        """Check if position is within the full environment grid bounds."""
+        if not hasattr(self.env, 'unwrapped') or not hasattr(self.env.unwrapped, 'grid'):
+            return False
+        x, y = pos
+        grid = self.env.unwrapped.grid
+        return 0 <= x < grid.width and 0 <= y < grid.height
     
     def _is_key(self, cell):
         """Check if cell contains a key (yellow object)."""
@@ -521,8 +563,9 @@ class CurriculumLearningWrapper(gym.Wrapper):
         obs, info = self.env.reset(**kwargs)
         
         # Adjust max steps based on difficulty
+        # Use a reasonable base that allows task completion (ObstructedMaze-Full needs ~2500 steps)
         if hasattr(self.env, 'max_steps'):
-            base_steps = 100
+            base_steps = 2500
             self.env.max_steps = int(base_steps * (0.5 + 0.5 * self.current_difficulty))
         
         info['curriculum_difficulty'] = self.current_difficulty
@@ -568,12 +611,12 @@ def create_enhanced_env(env_id="MiniGrid-ObstructedMaze-Full-v1",
     # Apply reward shaping wrapper
     if use_reward_shaping:
         env = ObstructedMazeWrapper(env)
-        print("✓ Applied reward shaping wrapper")
-    
+        print("[OK] Applied reward shaping wrapper")
+
     # Apply curriculum learning wrapper
     if use_curriculum:
         env = CurriculumLearningWrapper(env)
-        print("✓ Applied curriculum learning wrapper")
+        print("[OK] Applied curriculum learning wrapper")
     
     return env
 

@@ -17,7 +17,9 @@ def preprocess_observation(obs):
     return {
         'image': obs['image'],
         'direction': obs['direction'],
-        'agent_pos': obs.get('agent_pos', [0, 0])
+        'agent_pos': obs.get('agent_pos', [0, 0]),
+        'agent_pos_normalized': obs.get('agent_pos_normalized', [0.0, 0.0]),
+        'goal_direction': obs.get('goal_direction', [0.0, 0.0])
     }
 
 
