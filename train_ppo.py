@@ -26,7 +26,7 @@ def preprocess_observation(obs):
 
 def train_ppo_agent(
         episodes=2000,
-        max_steps=1000,
+        max_steps=2500,
         update_frequency=512,  # ← CHANGE THIS from 2048 to 512
         save_interval=250,
         model_dir='models_ppo',
