@@ -8,10 +8,13 @@ class ObstructedMazeWrapper(gym.Wrapper):
     Enhanced wrapper for ObstructedMaze-Full with reward shaping and progress tracking.
     This wrapper adds intermediate rewards to help the agent learn more effectively.
     """
-    
-    def __init__(self, env):
+
+    def __init__(self, env, fixed_seed=None):
         super().__init__(env)
-        
+
+        # Fixed seed for deterministic episodes (None = random)
+        self.fixed_seed = fixed_seed
+
         # Track agent progress
         self.keys_picked_count = 0  # Track total key pickups
         self.last_key_pickup_step = -100  # Prevent rapid pickup spam
@@ -24,6 +27,14 @@ class ObstructedMazeWrapper(gym.Wrapper):
         self.doors_opened = set()
         self.keys_picked = set()
         self.boxes_opened = set()
+
+        # Track repeated pickup/drop of same objects (position-based)
+        # Key: (object_type, position_tuple), Value: count of pickup/drop cycles
+        self.object_pickup_count = {}  # Track pickup counts per position
+        self.object_drop_count = {}    # Track drop counts per position
+        self.last_picked_object_pos = None  # Position of last picked object
+        self.repeated_interaction_threshold = 3  # Penalty after this many repeats
+        self.repeated_interaction_penalty = -2.0  # Large penalty for repeated pickup/drop
         
         # Reward shaping parameters - IMPROVED for better learning DQN
         # self.exploration_reward = 0.01       # Increased from 0.002
@@ -68,12 +79,19 @@ class ObstructedMazeWrapper(gym.Wrapper):
         print("Enhanced ObstructedMaze Wrapper initialized with reward shaping:")
         print(f"  Exploration reward: {self.exploration_reward}")
         print(f"  Key pickup reward: {self.key_pickup_reward}")
-        #print(f"  Door open reward: {self.door_open_reward}")
         print(f"  Box open reward: {self.box_open_reward}")
+        print(f"  Ball pickup reward: {self.ball_pickup_reward}")
+        print(f"  Ball moved reward: {self.ball_moved_reward}")
+        print(f"  Repeated interaction threshold: {self.repeated_interaction_threshold}")
+        print(f"  Repeated interaction penalty: {self.repeated_interaction_penalty}")
         print(f"  Max steps: {self.max_steps}")
     
     def reset(self, **kwargs):
         """Reset the environment and tracking variables."""
+        # Use fixed seed if set (for deterministic episodes)
+        if self.fixed_seed is not None and 'seed' not in kwargs:
+            kwargs['seed'] = self.fixed_seed
+
         obs, info = self.env.reset(**kwargs)
         
         # Reset tracking
@@ -90,6 +108,11 @@ class ObstructedMazeWrapper(gym.Wrapper):
         self.last_carrying = None
         self.step_count = 0
         self.initial_obs = obs.copy()
+
+        # Reset repeated pickup/drop tracking
+        self.object_pickup_count.clear()
+        self.object_drop_count.clear()
+        self.last_picked_object_pos = None
         
         # Add agent position to tracking
         # Get agent position from environment state
@@ -307,73 +330,122 @@ class ObstructedMazeWrapper(gym.Wrapper):
         # 3. Analyze the grid to detect interactions
         grid = obs['image']
         
-        # 4. Reward for picking up objects (keys) - CRITICAL for maze solving!
+        # 4. Reward for picking up objects (keys, balls) - CRITICAL for maze solving!
         if action == 3:  # pickup action
-            # front_pos = self._get_front_position(agent_pos, agent_dir)
-            # if self._is_valid_position(front_pos, grid.shape):
-            #     front_cell = grid[front_pos[1], front_pos[0]]
-            #     if self._is_key(front_cell) and front_pos not in self.keys_picked:
-            #         bonus += self.key_pickup_reward
-            #         self.keys_picked.add(front_pos)
-            #         self.carrying_key = True
-            #         print(f"🔑 KEY PICKED UP at step {self.step_count}!")
-
             front_pos = self._get_front_position(agent_pos, agent_dir)
             if self._is_valid_position(front_pos, grid.shape):
                 front_cell = grid[front_pos[1], front_pos[0]]
 
-                if self._is_key(front_cell):
-                    # Cooldown period: only reward if enough steps passed since last pickup
-                    steps_since_last = self.step_count - self.last_key_pickup_step
+                # Check if pickup was successful by comparing pre/post carrying state
+                current_carrying = self.env.unwrapped.carrying if hasattr(self.env, 'unwrapped') else None
+                pickup_succeeded = (pre_action_carrying is None and current_carrying is not None)
 
-                    if steps_since_last > 50:  # At least 50 steps between pickups
-                        self.keys_picked_count += 1
+                if self._is_key(front_cell) and pickup_succeeded:
+                    # Track repeated pickup of same object
+                    pickup_key = ('key', front_pos)
+                    self.object_pickup_count[pickup_key] = self.object_pickup_count.get(pickup_key, 0) + 1
+                    self.last_picked_object_pos = front_pos
+                    pickup_count = self.object_pickup_count[pickup_key]
 
-                        # Diminishing returns: first pickup = full reward, later = less
-                        if self.keys_picked_count == 1:
-                            bonus += self.key_pickup_reward  # Full reward
-                            print(f"🔑 KEY PICKED UP at step {self.step_count}!")
-                        elif self.keys_picked_count == 2:
-                            bonus += self.key_pickup_reward * 0.5  # Half reward
-                            print(f"🔑 KEY PICKED UP AGAIN at step {self.step_count}!")
-                        else:
-                            bonus += 0.1  # Tiny reward after that
-
-                        self.last_key_pickup_step = self.step_count
+                    # Escalating penalties for repeated pickup of same key
+                    if pickup_count == 1:
+                        # First pickup - full reward
+                        bonus += self.key_pickup_reward
                         self.carrying_key = True
+                        print(f"🔑 KEY PICKED UP at step {self.step_count}!")
+                    elif pickup_count == 2:
+                        # 2nd pickup of same key - no reward, small penalty
+                        bonus -= 0.5
+                        self.carrying_key = True
+                        print(f"⚠️ KEY PICKED UP AGAIN (2nd time, -0.5) at step {self.step_count}!")
+                    elif pickup_count == 3:
+                        # 3rd pickup - medium penalty
+                        bonus -= 1.5
+                        self.carrying_key = True
+                        print(f"⚠️ KEY PICKED UP AGAIN (3rd time, -1.5) at step {self.step_count}!")
                     else:
-                        # Too soon - no reward (prevents spam)
+                        # 4th+ pickup - large penalty
+                        bonus -= 2.5
                         self.carrying_key = True
+                        print(f"❌ KEY PICKED UP TOO MANY TIMES ({pickup_count}x, -2.5) at step {self.step_count}!")
 
-                # 4b. NEW: Reward for picking up green balls (to move them)
-                elif len(front_cell) >= 1 and front_cell[0] == 8:  # Ball object
+                # 4b. Reward for picking up green balls (to move them out of the way)
+                elif len(front_cell) >= 1 and front_cell[0] == 8 and pickup_succeeded:  # Ball object
                     # Check if it's green (not blue goal) - blue has color code 1
-                    if len(front_cell) >= 2 and front_cell[1] != 1:  # Not blue
-                        bonus += self.ball_pickup_reward
-                        print(f"🟢 GREEN BALL PICKED UP at step {self.step_count}!")
+                    if len(front_cell) >= 2 and front_cell[1] != 1:  # Not blue (green ball)
+                        # Track repeated pickup of same ball
+                        pickup_key = ('ball', front_pos)
+                        self.object_pickup_count[pickup_key] = self.object_pickup_count.get(pickup_key, 0) + 1
+                        self.last_picked_object_pos = front_pos
+                        pickup_count = self.object_pickup_count[pickup_key]
 
-        # 4c. Reward for strategically dropping objects
+                        # Escalating penalties for repeated pickup of same ball
+                        if pickup_count == 1:
+                            # First pickup - full reward
+                            bonus += self.ball_pickup_reward
+                            print(f"🟢 GREEN BALL PICKED UP at step {self.step_count}!")
+                        elif pickup_count == 2:
+                            # 2nd pickup - no reward, small penalty
+                            bonus -= 0.5
+                            print(f"⚠️ GREEN BALL PICKED UP AGAIN (2nd time, -0.5) at step {self.step_count}!")
+                        elif pickup_count == 3:
+                            # 3rd pickup - medium penalty
+                            bonus -= 1.5
+                            print(f"⚠️ GREEN BALL PICKED UP AGAIN (3rd time, -1.5) at step {self.step_count}!")
+                        else:
+                            # 4th+ pickup - large penalty
+                            bonus -= 2.5
+                            print(f"❌ GREEN BALL PICKED UP TOO MANY TIMES ({pickup_count}x, -2.5) at step {self.step_count}!")
+
+                # 4c. PENALTY for picking up boxes - agent should only OPEN them, not pick them up!
+                elif self._is_box(front_cell) and pickup_succeeded:
+                    bonus -= 3.0  # Strong penalty for picking up boxes
+                    print(f"❌ BOX PICKED UP (SHOULD ONLY OPEN) - PENALTY at step {self.step_count}!")
+
+        # 4d. Reward for strategically dropping objects (with repeated drop tracking)
         if action == 4:  # drop action
             # Get current agent position first
             agentpos = tuple(self.env.unwrapped.agent_pos) if hasattr(self.env.unwrapped, 'agent_pos') else (0, 0)
-            if hasattr(self.env, 'unwrapped') and hasattr(self.env.unwrapped, 'carrying'):
-                carrying = self.env.unwrapped.carrying
-                if carrying is not None:
-                    if hasattr(carrying, 'type') and carrying.type == 'ball':
-                        if agentpos not in self.balls_moved:
-                            bonus += self.ball_moved_reward  # Keep this - moving balls is good
-                            self.balls_moved.add(agentpos)
-                            print(f"📍 BALL MOVED OUT OF WAY at step {self.step_count}!")
-                        else:
-                            bonus -= 0.5  # Penalty for dropping ball again
-                            print(f"📍 BALL RE-DROPPED (PENALTY -0.5) at step {self.step_count}!")
 
-                    elif hasattr(carrying, 'type') and carrying.type == 'key':
-                        bonus -= 5.0  # STRONG penalty - keys should NOT be dropped!
-                        print(f"🔑 KEY DROPPED (PENALTY -5.0) at step {self.step_count}")
+            # Check what was being carried BEFORE the drop (use pre_action state)
+            if pre_action_carrying is not None:
+                obj_type = getattr(pre_action_carrying, 'type', None)
+
+                # Track repeated drops at the same position or of the same object
+                if self.last_picked_object_pos is not None:
+                    drop_key = (obj_type, self.last_picked_object_pos)
+                    self.object_drop_count[drop_key] = self.object_drop_count.get(drop_key, 0) + 1
+                    drop_count = self.object_drop_count[drop_key]
+
+                    # Check if this is a repeated pickup/drop cycle
+                    pickup_count = self.object_pickup_count.get(drop_key, 0)
+                    total_cycles = min(pickup_count, drop_count)
+
+                    if total_cycles > self.repeated_interaction_threshold:
+                        # Large penalty for repeated pickup/drop of same object
+                        bonus += self.repeated_interaction_penalty
+                        print(f"⚠️ REPEATED PICKUP/DROP CYCLE ({total_cycles}x) - PENALTY at step {self.step_count}!")
+
+                if obj_type == 'ball':
+                    if agentpos not in self.balls_moved:
+                        bonus += self.ball_moved_reward  # Moving balls out of the way is good
+                        self.balls_moved.add(agentpos)
+                        print(f"📍 BALL MOVED OUT OF WAY at step {self.step_count}!")
                     else:
-                        bonus -= 2.0  # Strong penalty for dropping other objects
-                        print(f"📍 OBJECT DROPPED (PENALTY -2.0) at step {self.step_count}!")
+                        bonus -= 0.5  # Penalty for dropping ball in same spot again
+                        print(f"📍 BALL RE-DROPPED (PENALTY -0.5) at step {self.step_count}!")
+
+                elif obj_type == 'key':
+                    bonus -= 5.0  # STRONG penalty - keys should NOT be dropped!
+                    print(f"🔑 KEY DROPPED (PENALTY -5.0) at step {self.step_count}")
+
+                elif obj_type == 'box':
+                    bonus -= 3.0  # Strong penalty - boxes should not be picked up or dropped
+                    print(f"📦 BOX DROPPED (PENALTY -3.0) at step {self.step_count}!")
+
+                else:
+                    bonus -= 2.0  # Strong penalty for dropping other objects
+                    print(f"📍 OBJECT DROPPED (PENALTY -2.0) at step {self.step_count}!")
 
         # Check if agent is carrying a key (check environment state)
         if hasattr(self.env, 'unwrapped') and hasattr(self.env.unwrapped, 'carrying'):
@@ -600,18 +672,31 @@ class CurriculumLearningWrapper(gym.Wrapper):
         return obs, reward, done, truncated, info
 
 
-def create_enhanced_env(env_id="MiniGrid-ObstructedMaze-Full-v1", 
-                       use_curriculum=True, 
-                       use_reward_shaping=True):
-    """Create an enhanced environment with all wrappers."""
-    
+def create_enhanced_env(env_id="MiniGrid-ObstructedMaze-Full-v1",
+                       use_curriculum=True,
+                       use_reward_shaping=True,
+                       seed=42):
+    """
+    Create an enhanced environment with all wrappers.
+
+    Args:
+        env_id: The MiniGrid environment ID
+        use_curriculum: Whether to use curriculum learning wrapper
+        use_reward_shaping: Whether to use reward shaping wrapper
+        seed: Optional fixed seed for reproducibility.
+              - None (default): Random maze each episode (best for training)
+              - Integer: Fixed seed for deterministic maze (best for evaluation/debugging)
+    """
+
     # Create base environment
     env = gym.make(env_id)
-    
+
     # Apply reward shaping wrapper
     if use_reward_shaping:
-        env = ObstructedMazeWrapper(env)
+        env = ObstructedMazeWrapper(env, fixed_seed=seed)
         print("[OK] Applied reward shaping wrapper")
+        if seed is not None:
+            print(f"[OK] Fixed seed set to {seed} (deterministic mode)")
 
     # Apply curriculum learning wrapper
     if use_curriculum:
