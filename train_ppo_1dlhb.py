@@ -66,17 +66,17 @@ class TaskProgressionWrapper(gym.Wrapper):
     - Taking too many steps (tiny negative per step)
     """
 
-    # Stage completion rewards - HEAVILY weighted toward later stages
+    # Stage completion rewards - EXTREMELY weighted toward later stages
     STAGE_REWARDS = {
-        TaskStage.FOUND_GREEN_BALL: 0.2,
-        TaskStage.PICKED_GREEN_BALL: 0.5,      # Very small - early action
-        TaskStage.DROPPED_GREEN_BALL: 0.5,     # Very small - early action
-        TaskStage.FOUND_BOX: 0.5,
-        TaskStage.OPENED_BOX: 5.0,
-        TaskStage.PICKED_KEY: 15.0,            # BIG - critical step
-        TaskStage.UNLOCKED_DOOR: 25.0,         # HUGE - major achievement
+        TaskStage.FOUND_GREEN_BALL: 0.1,
+        TaskStage.PICKED_GREEN_BALL: 0.3,      # Tiny - just a stepping stone
+        TaskStage.DROPPED_GREEN_BALL: 0.3,     # Tiny - just a stepping stone
+        TaskStage.FOUND_BOX: 1.0,              # Increased - finding box is important
+        TaskStage.OPENED_BOX: 15.0,            # MASSIVE - this is the bottleneck!
+        TaskStage.PICKED_KEY: 25.0,            # HUGE - critical step
+        TaskStage.UNLOCKED_DOOR: 50.0,         # MASSIVE - major achievement
         TaskStage.DROPPED_KEY: 5.0,
-        TaskStage.PICKED_BLUE_BALL: 100.0,     # MASSIVE - final goal
+        TaskStage.PICKED_BLUE_BALL: 200.0,     # ENORMOUS - final goal
     }
 
     def __init__(self, env):
@@ -90,7 +90,7 @@ class TaskProgressionWrapper(gym.Wrapper):
         self.step_penalty = -0.0001
         self.regression_penalty = -2.0
         self.useless_action_penalty = -0.1
-        self.max_steps = 300  # Reduced to encourage faster learning
+        self.max_steps = 250  # Balanced - enough to explore but not too long
 
         # Object type codes in MiniGrid
         self.OBJ_BALL = 6
@@ -170,6 +170,8 @@ class TaskProgressionWrapper(gym.Wrapper):
                     self.box_pos = (x, y)
                 elif obj_type == 'door':
                     self.door_pos = (x, y)
+                elif obj_type == 'key':
+                    self.key_pos = (x, y)  # Track key position too
 
     def _enhance_observation(self, obs):
         """Add compass and task info to observation."""
@@ -247,9 +249,14 @@ class TaskProgressionWrapper(gym.Wrapper):
         self.steps_since_stage_change += 1
 
         # Stagnation penalty - if stuck at same stage for too long
-        if self.steps_since_stage_change > 100:
-            stagnation_penalty = -0.01 * (self.steps_since_stage_change - 100) / 100
-            shaped_reward += max(stagnation_penalty, -0.1)  # Cap at -0.1
+        if self.steps_since_stage_change > 50:
+            # Much stronger penalty after green ball is dropped - force exploration!
+            if self.green_ball_dropped and not self.box_opened:
+                stagnation_penalty = -0.02 * (self.steps_since_stage_change - 50) / 50
+                shaped_reward += max(stagnation_penalty, -0.3)  # Higher cap for box finding phase
+            else:
+                stagnation_penalty = -0.01 * (self.steps_since_stage_change - 50) / 50
+                shaped_reward += max(stagnation_penalty, -0.1)
 
         # Check for truncation
         if self.step_count >= self.max_steps:
@@ -406,6 +413,10 @@ class TaskProgressionWrapper(gym.Wrapper):
                         self.steps_since_stage_change = 0
                         reward += self.STAGE_REWARDS[TaskStage.OPENED_BOX]
                         print(f"  [Stage {self.current_stage}] Opened BOX! +{self.STAGE_REWARDS[TaskStage.OPENED_BOX]}")
+                        # Re-scan grid to find the key that was inside the box
+                        self._scan_grid_for_objects()
+                        if self.key_pos:
+                            print(f"  [INFO] Key found at position {self.key_pos}")
                     else:
                         # Trying to open box before dropping green ball - bigger penalty
                         reward += -5.0
@@ -473,6 +484,58 @@ class TaskProgressionWrapper(gym.Wrapper):
                 reward += 0.5
                 if action != 5:
                     print(f"  [HINT] Facing door with key but didn't toggle! Try action 5")
+
+        # === DISTANCE-BASED SHAPING - continuous guidance ===
+        reward += self._calculate_distance_reward(agent_pos)
+
+        return reward
+
+    def _calculate_distance_reward(self, agent_pos):
+        """Give reward/penalty based on distance to current objective."""
+        reward = 0.0
+        target = None
+        reward_multiplier = 1.0
+
+        # Determine current target based on stage
+        if not self.green_ball_dropped:
+            # Need to get green ball first
+            target = self.green_ball_pos
+        elif not self.box_opened:
+            # Need to open box first - this is critical!
+            target = self.box_pos
+            reward_multiplier = 2.0  # Extra incentive to find box
+        elif not self.door_unlocked:
+            # Need key, then door
+            carrying = self.env.unwrapped.carrying
+            if carrying is None:
+                # Need to pick up key - it should be where the box was (or nearby)
+                target = self.key_pos if self.key_pos else self.box_pos
+                reward_multiplier = 1.5
+            else:
+                # Have key, go to door
+                target = self.door_pos
+                reward_multiplier = 2.0  # Very important to reach door
+        else:
+            # Door unlocked, go to blue ball
+            target = self.blue_ball_pos
+            reward_multiplier = 2.0
+
+        if target is None or self.last_position is None:
+            return 0.0
+
+        # Calculate distances
+        old_dist = abs(self.last_position[0] - target[0]) + abs(self.last_position[1] - target[1])
+        new_dist = abs(agent_pos[0] - target[0]) + abs(agent_pos[1] - target[1])
+
+        # Reward for getting closer, penalty for getting further
+        if new_dist < old_dist:
+            reward = 0.15 * reward_multiplier  # Getting closer
+        elif new_dist > old_dist:
+            reward = -0.08 * reward_multiplier  # Getting further
+
+        # Bonus for being very close to target
+        if new_dist <= 1:
+            reward += 0.3 * reward_multiplier
 
         return reward
 
@@ -807,7 +870,7 @@ def create_env():
 # TRAINING LOOP
 # =============================================================================
 
-def train(episodes=3000, max_steps=500, update_frequency=256,
+def train(episodes=5000, max_steps=250, update_frequency=128,
           save_interval=500, model_dir='models_1dlhb', log_dir='logs_1dlhb'):
     """Train PPO agent on ObstructedMaze-1Dlhb."""
 
@@ -858,6 +921,12 @@ def train(episodes=3000, max_steps=500, update_frequency=256,
     total_steps = 0
     start_time = time.time()
 
+    # Track key milestones
+    total_box_opens = 0
+    total_key_pickups = 0
+    total_door_unlocks = 0
+    total_successes = 0
+
     print("\nTraining started...\n")
 
     try:
@@ -900,11 +969,25 @@ def train(episodes=3000, max_steps=500, update_frequency=256,
             success = 1 if max_stage == TaskStage.PICKED_BLUE_BALL else 0
             success_window.append(success)
 
+            # Track milestones
+            if max_stage >= TaskStage.OPENED_BOX:
+                total_box_opens += 1
+            if max_stage >= TaskStage.PICKED_KEY:
+                total_key_pickups += 1
+            if max_stage >= TaskStage.UNLOCKED_DOOR:
+                total_door_unlocks += 1
+            if max_stage >= TaskStage.PICKED_BLUE_BALL:
+                total_successes += 1
+
             # Log to tensorboard
             writer.add_scalar('Episode/Reward', episode_reward, episode)
             writer.add_scalar('Episode/MaxStage', max_stage, episode)
             writer.add_scalar('Episode/SuccessRate', np.mean(success_window), episode)
             writer.add_scalar('Episode/Steps', step + 1, episode)
+            writer.add_scalar('Milestones/BoxOpens', total_box_opens, episode)
+            writer.add_scalar('Milestones/KeyPickups', total_key_pickups, episode)
+            writer.add_scalar('Milestones/DoorUnlocks', total_door_unlocks, episode)
+            writer.add_scalar('Milestones/Successes', total_successes, episode)
 
             # Progress report
             if (episode + 1) % 100 == 0:
@@ -917,6 +1000,7 @@ def train(episodes=3000, max_steps=500, update_frequency=256,
                 print(f"  Avg Reward (100): {avg_reward:.2f}")
                 print(f"  Avg Stage (100): {avg_stage:.2f}")
                 print(f"  Success Rate: {success_rate:.2%}")
+                print(f"  Milestones - Box: {total_box_opens}, Key: {total_key_pickups}, Door: {total_door_unlocks}, Success: {total_successes}")
                 print(f"  Total Steps: {total_steps}")
                 print(f"  Time: {elapsed/60:.1f} min")
 
