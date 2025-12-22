@@ -78,6 +78,15 @@ python evaluate.py --model_path models/dqn_final.pth --no_curriculum --demo --de
 
 # Live demonstration with rendering without curriculum and top episodes
 python evaluate.py --model_path models/dqn_final.pth --no_curriculum --demo --demo_episodes 2000 --demo_top_k 2 --save_gif
+
+# Run 10 episodes, save best as GIF (no live rendering - fast)
+python train_ppo_1dlhb.py --mode eval --model models_1dlhb/ppo_1dlhb_final.pth --save-gif
+
+# Run 20 episodes, save best as GIF
+python train_ppo_1dlhb.py --mode eval --model models_1dlhb/ppo_1dlhb_final.pth --save-gif --num-eval 20
+
+# Run with live rendering AND save GIF
+python train_ppo_1dlhb.py --mode eval --model models_1dlhb/ppo_1dlhb_final.pth --render --save-gif
 ```
 
 ### 4. Monitoring Training
